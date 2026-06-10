@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "NullNote",
+  "version": "0.1.0",
+  "description": "NullNote is a simple YouTube note sidebar with screenshots, auto capture, and export.",
+  "permissions": ["storage", "activeTab", "scripting", "tabs", "commands"],
+  "host_permissions": ["*://*.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open NullNote",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_popup": "src/popup/index.html"
+  },
+  "options_ui": {
+    "page": "src/settings/index.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["src/sidepanel/index.html", "src/settings/index.html", "sidepanel.js", "settings.js", "assets/*", "icons/*"],
+      "matches": ["*://*.youtube.com/*", "<all_urls>"]
+    }
+  ],
+  "commands": {
+    "open-notebook": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S"
+      },
+      "description": "Open NullNote panel"
+    },
+    "toggle-auto-capture": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+A"
+      },
+      "description": "Toggle NullNote auto capture"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
