@@ -178,14 +178,16 @@ function attachPlayerControls() {
     return;
   }
 
-  if (document.querySelector('.nullnote-player-autosnap')) {
-    return;
-  }
-
   const settingsButton = rightControls.querySelector('.ytp-settings-button');
   if (!settingsButton) {
     return;
   }
+
+  // Remove any pre-existing instances of our custom buttons to avoid duplicates
+  document.querySelectorAll('.nullnote-player-capture').forEach(el => el.remove());
+  document.querySelectorAll('.nullnote-player-marker').forEach(el => el.remove());
+  document.querySelectorAll('.nullnote-player-autosnap').forEach(el => el.remove());
+  document.querySelectorAll('.nullnote-fs-toggle-btn').forEach(el => el.remove());
 
   const captureBtn = createCaptureButton();
   const markerBtn = createMarkerButton();
