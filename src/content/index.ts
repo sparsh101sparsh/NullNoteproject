@@ -174,7 +174,14 @@ function updateAutoCaptureButtonAuto() {
 
 function attachPlayerControls() {
   const rightControls = document.querySelector('.ytp-right-controls');
-  if (!rightControls || document.querySelector('.nullnote-player-autosnap')) {
+  if (!rightControls) {
+    return;
+  }
+
+  // Handle fullscreen button check/injection if currently fullscreen
+  fullscreenManager.checkState();
+
+  if (document.querySelector('.nullnote-player-autosnap')) {
     return;
   }
 
@@ -767,9 +774,14 @@ async function initialize() {
 
   // ── Fullscreen Integration ──────────────────────────────────────────────
   fullscreenManager.init({
+    onEnter: () => {},
+    onExit: () => {},
     onToggle: () => layoutManager.toggle(),
-    isWorkspaceActive: () => layoutManager.isOpen(),
+    isOverlayOpen: () => layoutManager.isOpen(),
   });
+
+  // Force check fullscreen status in case we loaded in fullscreen mode
+  fullscreenManager.checkState();
 
   // Re-inject player controls after the workspace closes and restores the DOM.
   window.addEventListener('nullnote-workspace-closed', () => {

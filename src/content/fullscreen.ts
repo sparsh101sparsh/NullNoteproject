@@ -53,14 +53,21 @@ export class FullscreenManager {
     return this._isActive;
   }
 
-  /** Force-check current fullscreen state (useful after SPA navigation) */
+  /** Force-check current fullscreen state (useful after SPA navigation or controls mutation) */
   checkState(): void {
     const fsEl = document.fullscreenElement || (document as any).webkitFullscreenElement;
     const isNowFullscreen = Boolean(fsEl);
-    if (isNowFullscreen && !this._isActive) {
-      this._onEnter();
-    } else if (!isNowFullscreen && this._isActive) {
-      this._onExit();
+    if (isNowFullscreen) {
+      if (!this._isActive) {
+        this._isActive = true;
+        this.callbacks?.onEnter();
+      }
+      this.injectButton();
+      this._watchControls();
+    } else {
+      if (this._isActive) {
+        this._onExit();
+      }
     }
   }
 
