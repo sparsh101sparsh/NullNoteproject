@@ -1,7 +1,7 @@
 import { captureVideoFrame } from './screenshot';
 import { createTimelineOverlay, renderTimelineMarkers, findProgressContainer } from './timeline';
 import { attachKeyboardShortcuts } from './keyboard';
-import { createCaptureButton, createMarkerButton, createAutoSnapButton, updateAutoSnapButton, createFullscreenPanelButton } from './ui';
+import { createFullscreenPanelButton } from './ui';
 import { STORAGE_MESSAGE_TYPES, DEFAULT_MARKER_ICON } from '@/utils/constants';
 import type { NotebookEntry } from '@/utils/types';
 import { FullscreenManager } from './fullscreen';
@@ -155,7 +155,6 @@ async function toggleAutoCapture() {
   state.autoCaptureEnabled = !state.autoCaptureEnabled;
   console.log('[NullNote] AutoSnap toggled:', state.autoCaptureEnabled);
   sendAutoCaptureMessage(state.autoCaptureEnabled);
-  updateAutoCaptureButtonAuto();
   if (state.autoCaptureEnabled) {
     startAutoCaptureLoop();
   } else {
@@ -163,13 +162,6 @@ async function toggleAutoCapture() {
   }
   // Sync the AutoSnap status to sidebar React app
   chrome.runtime.sendMessage({ type: 'autoCaptureCommand', enabled: state.autoCaptureEnabled });
-}
-
-function updateAutoCaptureButtonAuto() {
-  const button = document.querySelector<HTMLButtonElement>('.nullnote-player-autosnap');
-  if (button) {
-    updateAutoSnapButton(button, state.autoCaptureEnabled);
-  }
 }
 
 function attachPlayerControls() {
@@ -184,46 +176,25 @@ function attachPlayerControls() {
   }
 
   // Remove any pre-existing instances of our custom buttons to avoid duplicates
-  document.querySelectorAll('.nullnote-player-capture').forEach(el => el.remove());
-  document.querySelectorAll('.nullnote-player-marker').forEach(el => el.remove());
-  document.querySelectorAll('.nullnote-player-autosnap').forEach(el => el.remove());
   document.querySelectorAll('.nullnote-fs-toggle-btn').forEach(el => el.remove());
 
-  const captureBtn = createCaptureButton();
-  const markerBtn = createMarkerButton();
-  const autoSnapBtn = createAutoSnapButton();
+  // Only show workspace button in native fullscreen mode
+  if (!document.fullscreenElement) {
+    return;
+  }
+
   const workspaceBtn = createFullscreenPanelButton();
-
-  captureBtn.addEventListener('click', () => {
-    captureScreenshotForVideo('manual');
-  });
-
-  markerBtn.addEventListener('click', () => {
-    addQuickHighlight();
-  });
-
-  autoSnapBtn.addEventListener('click', () => {
-    toggleAutoCapture();
-  });
 
   workspaceBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     layoutManager.toggle();
   });
 
-  updateAutoSnapButton(autoSnapBtn, state.autoCaptureEnabled);
-
   // Safe insertion with parent validation
   const parent = settingsButton.parentNode;
   if (parent && parent.contains(settingsButton)) {
-    parent.insertBefore(captureBtn, settingsButton);
-    parent.insertBefore(markerBtn, settingsButton);
-    parent.insertBefore(autoSnapBtn, settingsButton);
     parent.insertBefore(workspaceBtn, settingsButton);
   } else {
-    rightControls.appendChild(captureBtn);
-    rightControls.appendChild(markerBtn);
-    rightControls.appendChild(autoSnapBtn);
     rightControls.appendChild(workspaceBtn);
   }
 }
@@ -563,28 +534,6 @@ function toggleInPagePanel(forceOpen = false) {
   panel.style.zIndex = '100';
   panel.style.boxShadow = '0 4px 24px rgba(0,0,0,0.08)';
 
-  const header = document.createElement('div');
-  header.style.padding = '10px 14px';
-  header.style.display = 'flex';
-  header.style.justifyContent = 'flex-end';
-  header.style.alignItems = 'center';
-  header.style.background = '#f8fafc';
-  header.style.borderBottom = '1px solid rgba(0,0,0,0.07)';
-
-  const closeButton = document.createElement('button');
-  closeButton.type = 'button';
-  closeButton.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-  closeButton.title = 'Close NullNote';
-  closeButton.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;background:rgba(0,0,0,0.06);border:none;border-radius:7px;color:#64748b;cursor:pointer;transition:background 0.15s;';
-  closeButton.addEventListener('mouseenter', () => { closeButton.style.background = 'rgba(0,0,0,0.12)'; });
-  closeButton.addEventListener('mouseleave', () => { closeButton.style.background = 'rgba(0,0,0,0.06)'; });
-  closeButton.addEventListener('click', () => {
-    panel.remove();
-    hiddenNodes.forEach(node => { node.style.display = ''; });
-    hiddenNodes.clear();
-  });
-
-  header.appendChild(closeButton);
 
   const frame = document.createElement('iframe');
   frame.src = chrome.runtime.getURL('src/sidepanel/index.html');
@@ -595,7 +544,6 @@ function toggleInPagePanel(forceOpen = false) {
   frame.style.background = '#ffffff';
   frame.setAttribute('allow', 'clipboard-write');
 
-  panel.appendChild(header);
   panel.appendChild(frame);
 
   // Safe DOM insertion with fallback
@@ -636,7 +584,6 @@ function attachMessageHandlers() {
     }
     if (message?.type === 'autoCaptureCommand') {
       state.autoCaptureEnabled = Boolean(message.enabled);
-      updateAutoCaptureButtonAuto();
       if (state.autoCaptureEnabled) {
         startAutoCaptureLoop();
       } else {
@@ -673,8 +620,13 @@ function attachPlayerMutationObserver() {
   let debounceTimer: number | null = null;
 
   const observer = new MutationObserver(() => {
-    // Only act if our buttons are actually missing — skip if they're already there
-    if (document.querySelector('.nullnote-player-capture')) return;
+    const isFullscreen = !!document.fullscreenElement;
+    const hasButton = !!document.querySelector('.nullnote-fs-toggle-btn');
+    const progress = findProgressContainer();
+    const needsOverlay = !!(progress && !state.overlay);
+
+    // If button presence matches fullscreen state, AND we don't need timeline overlay, skip
+    if (isFullscreen === hasButton && !needsOverlay) return;
 
     // Debounce: wait 300ms of quiet before doing any DOM work
     if (debounceTimer !== null) window.clearTimeout(debounceTimer);
@@ -780,7 +732,6 @@ async function initialize() {
 
   attachPlayerMutationObserver();
   attachPlayerControls();
-  updateAutoCaptureButtonAuto();
 
   if (state.autoCaptureEnabled) {
     startAutoCaptureLoop();
@@ -801,6 +752,15 @@ async function initialize() {
   fullscreenManager.init({
     onToggle: () => layoutManager.toggle(),
     isOverlayOpen: () => layoutManager.isOpen(),
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    attachPlayerControls();
+    const progress = findProgressContainer();
+    if (progress && !state.overlay) {
+      state.overlay = createTimelineOverlay(progress);
+      renderTimeline();
+    }
   });
 
   // Re-inject player controls after the workspace closes and restores the DOM.
