@@ -107,8 +107,8 @@ export function createFullscreenPanelButton(): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'ytp-button nullnote-fs-toggle-btn';
-  button.title = 'Open NullNote';
-  button.setAttribute('aria-label', 'Open NullNote sidebar');
+  button.title = 'Toggle NullNote Workspace';
+  button.setAttribute('aria-label', 'Toggle NullNote Workspace');
   button.style.cssText = `
     display: inline-flex;
     align-items: center;

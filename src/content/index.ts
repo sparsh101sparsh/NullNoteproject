@@ -1,7 +1,7 @@
 import { captureVideoFrame } from './screenshot';
 import { createTimelineOverlay, renderTimelineMarkers, findProgressContainer } from './timeline';
 import { attachKeyboardShortcuts } from './keyboard';
-import { createCaptureButton, createMarkerButton, createAutoSnapButton, updateAutoSnapButton } from './ui';
+import { createCaptureButton, createMarkerButton, createAutoSnapButton, updateAutoSnapButton, createFullscreenPanelButton } from './ui';
 import { STORAGE_MESSAGE_TYPES, DEFAULT_MARKER_ICON } from '@/utils/constants';
 import type { NotebookEntry } from '@/utils/types';
 import { FullscreenManager } from './fullscreen';
@@ -178,9 +178,6 @@ function attachPlayerControls() {
     return;
   }
 
-  // Handle fullscreen button check/injection if currently fullscreen
-  fullscreenManager.checkState();
-
   if (document.querySelector('.nullnote-player-autosnap')) {
     return;
   }
@@ -193,6 +190,7 @@ function attachPlayerControls() {
   const captureBtn = createCaptureButton();
   const markerBtn = createMarkerButton();
   const autoSnapBtn = createAutoSnapButton();
+  const workspaceBtn = createFullscreenPanelButton();
 
   captureBtn.addEventListener('click', () => {
     captureScreenshotForVideo('manual');
@@ -206,6 +204,11 @@ function attachPlayerControls() {
     toggleAutoCapture();
   });
 
+  workspaceBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    layoutManager.toggle();
+  });
+
   updateAutoSnapButton(autoSnapBtn, state.autoCaptureEnabled);
 
   // Safe insertion with parent validation
@@ -214,10 +217,12 @@ function attachPlayerControls() {
     parent.insertBefore(captureBtn, settingsButton);
     parent.insertBefore(markerBtn, settingsButton);
     parent.insertBefore(autoSnapBtn, settingsButton);
+    parent.insertBefore(workspaceBtn, settingsButton);
   } else {
     rightControls.appendChild(captureBtn);
     rightControls.appendChild(markerBtn);
     rightControls.appendChild(autoSnapBtn);
+    rightControls.appendChild(workspaceBtn);
   }
 }
 
@@ -774,20 +779,14 @@ async function initialize() {
 
   // ── Fullscreen Integration ──────────────────────────────────────────────
   fullscreenManager.init({
-    onEnter: () => {},
-    onExit: () => {},
     onToggle: () => layoutManager.toggle(),
     isOverlayOpen: () => layoutManager.isOpen(),
   });
-
-  // Force check fullscreen status in case we loaded in fullscreen mode
-  fullscreenManager.checkState();
 
   // Re-inject player controls after the workspace closes and restores the DOM.
   window.addEventListener('nullnote-workspace-closed', () => {
     window.setTimeout(() => {
       attachPlayerControls();
-      fullscreenManager.injectButton();
       const progress = findProgressContainer();
       if (progress && !state.overlay) {
         state.overlay = createTimelineOverlay(progress);
