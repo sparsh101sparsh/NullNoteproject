@@ -670,13 +670,31 @@ function attachPlayerMutationObserver() {
   const player = document.getElementById('movie_player');
   if (!player) return;
 
+  let debounceTimer: number | null = null;
+
   const observer = new MutationObserver(() => {
-    attachPlayerControls();
-    const progress = findProgressContainer();
-    if (progress && !state.overlay) {
-      state.overlay = createTimelineOverlay(progress);
-      renderTimeline();
-    }
+    // Only act if our buttons are actually missing — skip if they're already there
+    if (document.querySelector('.nullnote-player-capture')) return;
+
+    // Debounce: wait 300ms of quiet before doing any DOM work
+    if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+    debounceTimer = window.setTimeout(() => {
+      debounceTimer = null;
+
+      // CRITICAL: disconnect before touching the DOM to prevent re-entrant mutations
+      observer.disconnect();
+
+      attachPlayerControls();
+
+      const progress = findProgressContainer();
+      if (progress && !state.overlay) {
+        state.overlay = createTimelineOverlay(progress);
+        renderTimeline();
+      }
+
+      // Reconnect after our DOM work is done
+      observer.observe(player, { childList: true, subtree: true });
+    }, 300);
   });
 
   observer.observe(player, { childList: true, subtree: true });
