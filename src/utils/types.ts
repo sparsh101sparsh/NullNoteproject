@@ -47,8 +47,10 @@ export interface NotebookEntry {
   videoTitle: string;
   timestamp: number;
   note?: string;
+  icon?: string;
   imageData?: string;
   ocrText?: string;
   source?: 'manual' | 'auto';
   createdAt: number;
 }
+

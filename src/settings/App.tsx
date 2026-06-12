@@ -5,16 +5,13 @@ import {
   getDefaultExportFormat, setDefaultExportFormat,
   getIncludeTimestamps, setIncludeTimestamps,
   getIncludeScreenshots, setIncludeScreenshots,
-  getPanelWidth, setPanelWidth,
-  getFontSize, setFontSize,
+  getImageOutlineEnabled, setImageOutlineEnabled,
   getStorageStats, clearAllData, exportAllDataAsJson,
 } from '@/storage/repository';
 
 // ─── TYPES ──────────────────────────────────────────────────────────────────
 
 type ExportFormat = 'pdf' | 'docs' | 'markdown';
-type PanelWidth = 'narrow' | 'default' | 'wide';
-type FontSizeOption = 'small' | 'medium' | 'large';
 
 interface Stats {
   documents: number;
@@ -103,8 +100,7 @@ export default function SettingsApp() {
   const [includeScreenshots, setIncludeScreenshotsState] = useState(true);
 
   // Appearance
-  const [panelWidth, setPanelWidthState] = useState<PanelWidth>('default');
-  const [fontSize, setFontSizeState] = useState<FontSizeOption>('medium');
+  const [imageOutlineEnabled, setImageOutlineEnabledState] = useState(true);
 
   // Data
   const [stats, setStats] = useState<Stats | null>(null);
@@ -123,14 +119,13 @@ export default function SettingsApp() {
 
   useEffect(() => {
     async function load() {
-      const [interval, onOpen, fmt, ts, ss, pw, fs, st] = await Promise.all([
+      const [interval, onOpen, fmt, ts, ss, io, st] = await Promise.all([
         getAutoCaptureInterval(),
         getAutosnapOnOpen(),
         getDefaultExportFormat(),
         getIncludeTimestamps(),
         getIncludeScreenshots(),
-        getPanelWidth(),
-        getFontSize(),
+        getImageOutlineEnabled(),
         getStorageStats(),
       ]);
       setCaptureInterval(interval);
@@ -138,8 +133,7 @@ export default function SettingsApp() {
       setDefaultFormatState(fmt);
       setIncludeTimestampsState(ts);
       setIncludeScreenshotsState(ss);
-      setPanelWidthState(pw);
-      setFontSizeState(fs);
+      setImageOutlineEnabledState(io);
       setStats(st);
     }
     load().catch(console.error);
@@ -326,37 +320,17 @@ export default function SettingsApp() {
         {/* ── APPEARANCE ── */}
         <SectionCard title="Appearance" icon="🎨">
           <Row
-            label="Sidepanel width"
-            description="How wide the NullNote panel appears in the YouTube sidebar"
+            label="Screenshot Outline"
+            description="Show a colored border around screenshots that matches your selected marker icon"
           >
-            <SegmentedControl<PanelWidth>
-              value={panelWidth}
+            <Toggle
+              id="image-outline-enabled"
+              checked={imageOutlineEnabled}
               onChange={async (v) => {
-                setPanelWidthState(v);
-                await save(() => setPanelWidth(v));
+                setImageOutlineEnabledState(v);
+                await save(() => setImageOutlineEnabled(v));
+                chrome.runtime.sendMessage({ type: 'imageOutlineCommand', enabled: v });
               }}
-              options={[
-                { label: 'Narrow', value: 'narrow' },
-                { label: 'Default', value: 'default' },
-                { label: 'Wide', value: 'wide' },
-              ]}
-            />
-          </Row>
-          <Row
-            label="Editor font size"
-            description="Size of text in the note editor"
-          >
-            <SegmentedControl<FontSizeOption>
-              value={fontSize}
-              onChange={async (v) => {
-                setFontSizeState(v);
-                await save(() => setFontSize(v));
-              }}
-              options={[
-                { label: 'Small', value: 'small' },
-                { label: 'Medium', value: 'medium' },
-                { label: 'Large', value: 'large' },
-              ]}
             />
           </Row>
         </SectionCard>

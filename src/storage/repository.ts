@@ -1,5 +1,6 @@
 import { openNullNoteDB } from './db';
-import { DOCUMENTS_STORE, SCREENSHOTS_STORE, MARKERS_STORE, SETTINGS_STORE, AUTO_CAPTURE_KEY, AUTO_CAPTURE_INTERVAL_KEY, DEFAULT_CAPTURE_INTERVAL } from '@/utils/constants';
+import { DOCUMENTS_STORE, SCREENSHOTS_STORE, MARKERS_STORE, SETTINGS_STORE, AUTO_CAPTURE_KEY, AUTO_CAPTURE_INTERVAL_KEY, DEFAULT_CAPTURE_INTERVAL, SETTINGS_DEFAULT_EXPORT_FORMAT, SETTINGS_INCLUDE_TIMESTAMPS, SETTINGS_INCLUDE_SCREENSHOTS, SETTINGS_AUTOSNAP_ON_OPEN, SETTINGS_SELECTED_MARKER_ICON, DEFAULT_MARKER_ICON, SETTINGS_IMAGE_OUTLINE } from '@/utils/constants';
+
 
 export interface DocumentRecord {
   videoId: string;
@@ -23,6 +24,7 @@ export interface MarkerRecord {
   videoId: string;
   timestamp: number;
   note: string;
+  icon?: string;
   createdAt: number;
 }
 
@@ -100,13 +102,14 @@ export async function getScreenshotsForVideo(videoId: string): Promise<Screensho
   return screenshots as ScreenshotRecord[];
 }
 
-export async function saveMarkerRecord(id: string, videoId: string, timestamp: number, note: string): Promise<void> {
+export async function saveMarkerRecord(id: string, videoId: string, timestamp: number, note: string, icon?: string): Promise<void> {
   const db = await openNullNoteDB();
   const record: MarkerRecord = {
     id,
     videoId,
     timestamp,
     note,
+    icon,
     createdAt: Date.now()
   };
   await db.put(MARKERS_STORE, record);
@@ -166,6 +169,14 @@ export async function setAutoCaptureInterval(interval: number): Promise<void> {
   await db.put(SETTINGS_STORE, { id: AUTO_CAPTURE_INTERVAL_KEY, value: interval });
 }
 
+export async function getSelectedMarkerIcon(): Promise<string> {
+  return getSetting<string>(SETTINGS_SELECTED_MARKER_ICON, DEFAULT_MARKER_ICON);
+}
+
+export async function setSelectedMarkerIcon(icon: string): Promise<void> {
+  return setSetting(SETTINGS_SELECTED_MARKER_ICON, icon);
+}
+
 // ─── GENERIC SETTINGS HELPER ───────────────────────────────────────────────
 
 async function getSetting<T>(key: string, defaultValue: T): Promise<T> {
@@ -181,14 +192,6 @@ async function setSetting<T>(key: string, value: T): Promise<void> {
 
 // ─── SETTINGS PAGE ACCESSORS ───────────────────────────────────────────────
 
-import {
-  SETTINGS_DEFAULT_EXPORT_FORMAT,
-  SETTINGS_INCLUDE_TIMESTAMPS,
-  SETTINGS_INCLUDE_SCREENSHOTS,
-  SETTINGS_PANEL_WIDTH,
-  SETTINGS_FONT_SIZE,
-  SETTINGS_AUTOSNAP_ON_OPEN,
-} from '@/utils/constants';
 
 export async function getDefaultExportFormat(): Promise<'pdf' | 'docs' | 'markdown'> {
   return getSetting<'pdf' | 'docs' | 'markdown'>(SETTINGS_DEFAULT_EXPORT_FORMAT, 'pdf');
@@ -211,18 +214,11 @@ export async function setIncludeScreenshots(v: boolean) {
   return setSetting(SETTINGS_INCLUDE_SCREENSHOTS, v);
 }
 
-export async function getPanelWidth(): Promise<'narrow' | 'default' | 'wide'> {
-  return getSetting<'narrow' | 'default' | 'wide'>(SETTINGS_PANEL_WIDTH, 'default');
+export async function getImageOutlineEnabled(): Promise<boolean> {
+  return getSetting<boolean>(SETTINGS_IMAGE_OUTLINE, false);
 }
-export async function setPanelWidth(v: 'narrow' | 'default' | 'wide') {
-  return setSetting(SETTINGS_PANEL_WIDTH, v);
-}
-
-export async function getFontSize(): Promise<'small' | 'medium' | 'large'> {
-  return getSetting<'small' | 'medium' | 'large'>(SETTINGS_FONT_SIZE, 'medium');
-}
-export async function setFontSize(v: 'small' | 'medium' | 'large') {
-  return setSetting(SETTINGS_FONT_SIZE, v);
+export async function setImageOutlineEnabled(v: boolean) {
+  return setSetting(SETTINGS_IMAGE_OUTLINE, v);
 }
 
 export async function getAutosnapOnOpen(): Promise<boolean> {

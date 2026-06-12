@@ -84,8 +84,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return false;
   }
 
-  // Relay: seekVideo, manualCapture, manualMarker, update-seekbar-markers
-  if (['seekVideo', 'manualCapture', 'manualMarker', 'update-seekbar-markers'].includes(message.type)) {
+  // Relay: seekVideo, manualCapture, manualMarker, update-seekbar-markers, selectedMarkerIconChanged
+  if (['seekVideo', 'manualCapture', 'manualMarker', 'update-seekbar-markers', 'selectedMarkerIconChanged'].includes(message.type)) {
     sendToActiveYouTubeTab(message);
     return false;
   }

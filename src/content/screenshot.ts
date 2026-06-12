@@ -7,5 +7,6 @@ export async function captureVideoFrame(video: HTMLVideoElement): Promise<string
     throw new Error('Unable to create canvas context.');
   }
   context.drawImage(video, 0, 0, canvas.width, canvas.height);
-  return canvas.toDataURL('image/jpeg', 0.85);
+  // Using 1.0 quality JPEG ensures maximum visual fidelity without the heavy main-thread blocking of PNG encoding
+  return canvas.toDataURL('image/jpeg', 1.0);
 }

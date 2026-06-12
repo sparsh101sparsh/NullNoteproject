@@ -1,5 +1,6 @@
 import type { NotebookEntry } from '@/utils/types';
 import { formatSeconds } from '@/utils/format';
+import { MARKER_ICONS, DEFAULT_MARKER_ICON } from '@/utils/constants';
 
 const OVERLAY_ID = 'lecturesnap-timeline-overlay';
 
@@ -11,16 +12,24 @@ export function createTimelineOverlay(container: HTMLElement) {
 
   overlay = document.createElement('div');
   overlay.id = OVERLAY_ID;
+  // CRITICAL: height:0 + overflow:visible means ZERO layout impact.
+  // The seekbar NEVER shifts. Markers float visually above via bottom positioning.
+  // Do NOT set container.style.position — that caused the seekbar to shift upward.
   overlay.style.position = 'absolute';
   overlay.style.left = '0';
   overlay.style.right = '0';
-  overlay.style.top = '-10px';
-  overlay.style.height = '10px';
+  overlay.style.bottom = '0';
+  overlay.style.height = '0';
+  overlay.style.overflow = 'visible';
   overlay.style.pointerEvents = 'none';
   overlay.style.zIndex = '10';
-  container.style.position = 'relative';
   container.appendChild(overlay);
   return overlay;
+}
+
+function getMarkerFile(iconKey?: string): string {
+  const found = MARKER_ICONS.find(m => m.key === (iconKey || DEFAULT_MARKER_ICON));
+  return found?.file ?? 'mark_icon1.png';
 }
 
 export function renderTimelineMarkers(
@@ -28,23 +37,25 @@ export function renderTimelineMarkers(
   entries: NotebookEntry[],
   duration: number,
   onSeek: (timestamp: number) => void,
-  markerIconUrl?: string
+  _markerIconUrl?: string // kept for API compatibility, now unused
 ) {
   overlay.innerHTML = '';
   const clampedDuration = Math.max(duration, 1);
 
   entries.forEach((entry) => {
     const position = Math.min(100, Math.max(0, (entry.timestamp / clampedDuration) * 100));
+    const file = getMarkerFile(entry.icon);
+
     const marker = document.createElement('button');
     marker.type = 'button';
     marker.className = 'lecturesnap-marker';
     marker.style.pointerEvents = 'auto';
     marker.style.position = 'absolute';
     marker.style.left = `${position}%`;
-    marker.style.top = '-6px';
+    marker.style.bottom = '4px';
     marker.style.transform = 'translateX(-50%)';
-    marker.style.width = '16px';
-    marker.style.height = '16px';
+    marker.style.width = '28px';
+    marker.style.height = '28px';
     marker.style.cursor = 'pointer';
     marker.style.border = 'none';
     marker.style.background = 'transparent';
@@ -53,32 +64,34 @@ export function renderTimelineMarkers(
     marker.style.display = 'flex';
     marker.style.alignItems = 'center';
     marker.style.justifyContent = 'center';
+    marker.style.fontSize = '14px';
+    marker.style.lineHeight = '1';
+    marker.style.filter = 'drop-shadow(0px 1px 3px rgba(0,0,0,0.5))';
+    marker.style.transition = 'transform 0.12s ease';
+    
+    const img = document.createElement('img');
+    img.src = chrome.runtime.getURL('icons/' + file);
+    img.style.width = '22px';
+    img.style.height = '22px';
+    img.style.objectFit = 'contain';
+    img.style.pointerEvents = 'none';
+    marker.appendChild(img);
 
-    const iconImg = document.createElement('img');
-    iconImg.src = markerIconUrl || chrome.runtime.getURL('icons/pin.png');
-    iconImg.style.width = '14px';
-    iconImg.style.height = '14px';
-    iconImg.style.objectFit = 'contain';
-    iconImg.style.filter = 'drop-shadow(0px 2px 4px rgba(0, 0, 0, 0.4))';
-    iconImg.style.display = 'block';
-
-    marker.appendChild(iconImg);
-
-    // Premium custom note preview tooltip on hover
+    // Tooltip
     const tooltip = document.createElement('div');
     tooltip.className = 'lecturesnap-tooltip';
-    tooltip.textContent = `${formatSeconds(entry.timestamp)}${entry.note ? ` • ${entry.note}` : ''}`;
+    tooltip.textContent = `${formatSeconds(entry.timestamp)}${entry.note ? ` · ${entry.note}` : ''}`;
     tooltip.style.position = 'absolute';
-    tooltip.style.bottom = '22px';
-    tooltip.style.left = '50%';
-    tooltip.style.transform = 'translateX(-50%) translateY(4px)';
-    tooltip.style.background = '#1e293b';
+    tooltip.style.bottom = '32px';
+    tooltip.style.background = 'rgba(15,23,42,0.92)';
+    tooltip.style.backdropFilter = 'blur(8px)';
     tooltip.style.color = '#f8fafc';
-    tooltip.style.border = '1px solid rgba(255,255,255,0.08)';
+    tooltip.style.border = '1px solid rgba(255,255,255,0.10)';
     tooltip.style.borderRadius = '6px';
     tooltip.style.padding = '4px 8px';
     tooltip.style.fontSize = '11px';
     tooltip.style.fontWeight = '500';
+    tooltip.style.fontFamily = 'system-ui, sans-serif';
     tooltip.style.whiteSpace = 'nowrap';
     tooltip.style.pointerEvents = 'none';
     tooltip.style.opacity = '0';
@@ -86,22 +99,50 @@ export function renderTimelineMarkers(
     tooltip.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
     tooltip.style.zIndex = '99999';
 
+    // Clamp tooltip so it doesn't overflow off-screen at edges
+    if (position < 10) {
+      // Near left edge — align left
+      tooltip.style.left = '0';
+      tooltip.style.transform = 'translateY(4px)';
+    } else if (position > 90) {
+      // Near right edge — align right
+      tooltip.style.right = '0';
+      tooltip.style.left = 'auto';
+      tooltip.style.transform = 'translateY(4px)';
+    } else {
+      // Center normally
+      tooltip.style.left = '50%';
+      tooltip.style.transform = 'translateX(-50%) translateY(4px)';
+    }
+
+    const tooltipShowTransform = position < 10
+      ? 'translateY(0)'
+      : position > 90
+        ? 'translateY(0)'
+        : 'translateX(-50%) translateY(0)';
+    const tooltipHideTransform = position < 10
+      ? 'translateY(4px)'
+      : position > 90
+        ? 'translateY(4px)'
+        : 'translateX(-50%) translateY(4px)';
+
     marker.appendChild(tooltip);
 
     marker.addEventListener('mouseenter', () => {
+      marker.style.transform = 'translateX(-50%) scale(1.2)';
       tooltip.style.opacity = '1';
-      tooltip.style.transform = 'translateX(-50%) translateY(0)';
+      tooltip.style.transform = tooltipShowTransform;
     });
-
     marker.addEventListener('mouseleave', () => {
+      marker.style.transform = 'translateX(-50%) scale(1)';
       tooltip.style.opacity = '0';
-      tooltip.style.transform = 'translateX(-50%) translateY(4px)';
+      tooltip.style.transform = tooltipHideTransform;
     });
-
     marker.addEventListener('click', (e) => {
       e.stopPropagation();
       onSeek(entry.timestamp);
     });
+
     overlay.appendChild(marker);
   });
 }

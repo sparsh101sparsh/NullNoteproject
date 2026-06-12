@@ -42,9 +42,41 @@ export function createCaptureButton() {
   return createPlayerButton('capture.png', 'NullNote Capture Screenshot (P)', 'nullnote-player-capture');
 }
 
-export function createMarkerButton() {
-  return createPlayerButton('icon-128.png', 'NullNote Add Marker (H)', 'nullnote-player-marker');
+export function createMarkerButton(): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.className = `ytp-button nullnote-player-marker`;
+  button.title = 'NullNote Add Marker (H)';
+  button.type = 'button';
+  button.style.display = 'inline-flex';
+  button.style.alignItems = 'center';
+  button.style.justifyContent = 'center';
+  button.style.width = '36px';
+  button.style.height = '36px';
+  button.style.background = 'transparent';
+  button.style.border = 'none';
+  button.style.cursor = 'pointer';
+  button.style.outline = 'none';
+  button.style.padding = '0';
+  button.style.margin = '0 2px';
+  button.style.verticalAlign = 'middle';
+  button.style.opacity = '0.85';
+  button.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
+
+  // Inline bookmark SVG — no external file needed
+  button.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>`;
+
+  button.addEventListener('mouseenter', () => {
+    button.style.opacity = '1';
+    button.style.transform = 'scale(1.08)';
+  });
+  button.addEventListener('mouseleave', () => {
+    button.style.opacity = '0.85';
+    button.style.transform = 'scale(1)';
+  });
+
+  return button;
 }
+
 
 export function createAutoSnapButton() {
   return createPlayerButton('capture.png', 'NullNote Toggle AutoSnap', 'nullnote-player-autosnap');
