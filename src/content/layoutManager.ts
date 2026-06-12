@@ -123,19 +123,6 @@ export class LayoutManager {
     const header = document.createElement('div');
     header.className = 'nullnote-fs-header';
 
-    const brand = document.createElement('div');
-    brand.className = 'nullnote-fs-brand';
-
-    const logo = document.createElement('img');
-    logo.src = chrome.runtime.getURL('icons/icon-128.png');
-    logo.alt = '';
-    logo.className = 'nullnote-fs-logo';
-
-    const label = document.createElement('span');
-    label.textContent = 'Workspace';
-    brand.appendChild(logo);
-    brand.appendChild(label);
-
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'nullnote-fs-close';
@@ -149,7 +136,6 @@ export class LayoutManager {
       </svg>`;
     closeBtn.addEventListener('click', (e) => { e.stopPropagation(); this.hide(); });
 
-    header.appendChild(brand);
     header.appendChild(closeBtn);
 
     // ── Iframe ──────────────────────────────────────────────────────────────
@@ -234,26 +220,11 @@ export class LayoutManager {
       .nullnote-fs-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
-        padding: 10px 14px;
-        background: #f8fafc;
-        border-bottom: 1px solid #e8ecf0;
+        justify-content: flex-end;
+        padding: 8px 14px 4px;
+        background: #fff;
+        border-bottom: none;
         flex-shrink: 0;
-      }
-      .nullnote-fs-brand {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-weight: 800;
-        font-size: 14px;
-        color: #0f172a;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      }
-      .nullnote-fs-logo {
-        width: 22px;
-        height: 22px;
-        border-radius: 6px;
-        object-fit: contain;
       }
       .nullnote-fs-close {
         width: 28px;

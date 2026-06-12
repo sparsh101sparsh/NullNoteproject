@@ -1,7 +1,131 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { getDocument, saveDocument, saveVideoTitle, getScreenshotsForVideo, saveScreenshotBlob, saveMarkerRecord, pruneOrphanedRecords, getAutoCaptureEnabled, setAutoCaptureEnabled, getAutoCaptureInterval, setAutoCaptureInterval } from '@/storage/repository';
+import {
+  getDocument,
+  saveDocument,
+  saveVideoTitle,
+  getScreenshotsForVideo,
+  saveScreenshotBlob,
+  saveMarkerRecord,
+  pruneOrphanedRecords,
+  getAutoCaptureEnabled,
+  setAutoCaptureEnabled,
+  getAutoCaptureInterval,
+  setAutoCaptureInterval,
+  getSelectedMarkerIcon,
+  setSelectedMarkerIcon as setSelectedMarkerIconInDb,
+  getImageOutlineEnabled
+} from '@/storage/repository';
 import { formatSeconds } from '@/utils/format';
 import { exportToPdf, exportToDocs, exportToMarkdown, prepareSelfContainedHtml } from '@/export/exporters';
+import { MARKER_ICONS, DEFAULT_MARKER_ICON } from '@/utils/constants';
+
+// Map marker icon keys to their corresponding border colors
+function getMarkerColor(iconKey?: string): string {
+  switch (iconKey) {
+    case 'MarkIcon1': return '#facc15'; // yellow
+    case 'MarkIcon2': return '#f87171'; // red
+    case 'MarkIcon3': return '#60a5fa'; // blue
+    default: return '#facc15'; // fallback yellow
+  }
+}
+
+// ─── MARKER ICON PICKER ────────────────────────────────────────────────────
+
+interface MarkerIconPickerProps {
+  selected: string;
+  onChange: (key: string) => void;
+  iconUrl: (path: string) => string;
+}
+
+function MarkerIconPicker({ selected, onChange, iconUrl }: MarkerIconPickerProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const selectedDef = MARKER_ICONS.find(m => m.key === selected) ?? MARKER_ICONS[0];
+
+  // Close on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
+      <button
+        type="button"
+        className={`icon-btn ${open ? 'active' : ''}`}
+        onClick={() => setOpen(!open)}
+        title="Change Marker Color"
+        style={{ width: '30px', height: '30px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+      >
+        <img
+          src={iconUrl('icons/' + selectedDef.file)}
+          alt={selectedDef.label}
+          style={{ width: '16px', height: '16px', objectFit: 'contain' }}
+        />
+      </button>
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 'calc(100% + 6px)',
+            background: '#fff',
+            border: '1.5px solid #e8ecf0',
+            borderRadius: '12px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.10)',
+            padding: '4px',
+            zIndex: 100,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '2px',
+            minWidth: '120px',
+          }}
+        >
+          {MARKER_ICONS.map(icon => (
+            <button
+              key={icon.key}
+              type="button"
+              onClick={() => {
+                onChange(icon.key);
+                setOpen(false);
+              }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                width: '100%',
+                padding: '6px 8px',
+                borderRadius: '8px',
+                border: 'none',
+                background: selected === icon.key ? '#f8fafc' : 'transparent',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 600,
+                color: '#374151',
+                textAlign: 'left',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = '#f1f5f9'}
+              onMouseLeave={e => e.currentTarget.style.background = selected === icon.key ? '#f8fafc' : 'transparent'}
+            >
+              <img
+                src={iconUrl('icons/' + icon.file)}
+                alt=""
+                style={{ width: '16px', height: '16px', objectFit: 'contain' }}
+              />
+              <span>{icon.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function App() {
   const [videoId, setVideoId] = useState<string>('');
@@ -15,6 +139,8 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isEditorEmpty, setIsEditorEmpty] = useState<boolean>(true);
+  const [selectedMarkerIcon, setSelectedMarkerIconState] = useState<string>(DEFAULT_MARKER_ICON);
+  const [imageOutlineEnabled, setImageOutlineEnabled] = useState<boolean>(false);
 
   const editorRef = useRef<HTMLDivElement>(null);
   const saveTimeoutRef = useRef<number | null>(null);
@@ -24,11 +150,13 @@ export default function App() {
   const videoTitleRef = useRef<string>('Untitled Lecture');
   const videoUrlRef = useRef<string>('');
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const selectedMarkerIconRef = useRef<string>(DEFAULT_MARKER_ICON);
 
   // CRITICAL: Keep refs in sync with state so closures always see latest values
   useEffect(() => { videoIdRef.current = videoId; }, [videoId]);
   useEffect(() => { videoTitleRef.current = videoTitle; }, [videoTitle]);
   useEffect(() => { videoUrlRef.current = videoUrl; }, [videoUrl]);
+  useEffect(() => { selectedMarkerIconRef.current = selectedMarkerIcon; }, [selectedMarkerIcon]);
 
   const iconUrl = useCallback((path: string) => {
     try { return chrome.runtime.getURL(path); } catch { return path; }
@@ -87,6 +215,8 @@ export default function App() {
 
     getAutoCaptureEnabled().then(setAutoCaptureEnabledState);
     getAutoCaptureInterval().then(setAutoCaptureIntervalState);
+    getSelectedMarkerIcon().then(setSelectedMarkerIconState);
+    getImageOutlineEnabled().then(setImageOutlineEnabled);
 
     return () => { revokeObjectUrls(); };
   }, []);
@@ -147,13 +277,17 @@ export default function App() {
         if (message.videoUrl) setVideoUrl(message.videoUrl);
       } else if (message.type === 'insert-marker') {
         // imageData is optionally included when marker was triggered alongside a screenshot
-        insertMarkerInline(message.timestamp, message.imageData);
+        insertMarkerInline(message.timestamp, message.imageData, message.icon);
       } else if (message.type === 'insert-screenshot') {
         insertScreenshotInline(message.timestamp, message.imageData);
       } else if (message.type === 'autoCaptureCommand') {
         setAutoCaptureEnabledState(Boolean(message.enabled));
       } else if (message.type === 'autoCaptureIntervalCommand') {
         setAutoCaptureIntervalState(Number(message.interval) || 30);
+      } else if (message.type === 'imageOutlineCommand') {
+        setImageOutlineEnabled(Boolean(message.enabled));
+      } else if (message.type === 'selectedMarkerIconChanged') {
+        setSelectedMarkerIconState(message.icon || DEFAULT_MARKER_ICON);
       }
     };
 
@@ -237,24 +371,7 @@ export default function App() {
 
   const insertHtml = (html: string) => {
     if (!editorRef.current) return;
-    editorRef.current.focus();
     setIsEditorEmpty(false);
-
-    const sel = window.getSelection();
-    let range = savedRangeRef.current;
-
-    if (range && editorRef.current.contains(range.commonAncestorContainer)) {
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-    } else {
-      range = document.createRange();
-      range.selectNodeContents(editorRef.current);
-      range.collapse(false);
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-    }
-
-    range.collapse(false);
 
     const container = document.createElement('div');
     container.innerHTML = html;
@@ -265,16 +382,33 @@ export default function App() {
       lastNode = frag.appendChild(node);
     }
 
-    range.insertNode(frag);
+    // Check if we have a saved selection inside the editor
+    const sel = window.getSelection();
+    let range = savedRangeRef.current;
 
-    if (lastNode) {
-      range.setStartAfter(lastNode);
-      range.setEndAfter(lastNode);
-      sel?.removeAllRanges();
-      sel?.addRange(range);
+    if (range && editorRef.current.contains(range.commonAncestorContainer)) {
+      // Insert at saved cursor position
+      range.collapse(false);
+      range.insertNode(frag);
+      if (lastNode) {
+        range.setStartAfter(lastNode);
+        range.setEndAfter(lastNode);
+      }
+      savedRangeRef.current = range;
+    } else {
+      // No saved cursor — append to end of editor without focusing
+      editorRef.current.appendChild(frag);
+      // Update savedRange to point to end
+      const newRange = document.createRange();
+      if (lastNode) {
+        newRange.setStartAfter(lastNode);
+        newRange.setEndAfter(lastNode);
+      } else {
+        newRange.selectNodeContents(editorRef.current);
+        newRange.collapse(false);
+      }
+      savedRangeRef.current = newRange;
     }
-
-    savedRangeRef.current = range;
 
     // Debounced save after insertion
     if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
@@ -285,11 +419,15 @@ export default function App() {
   // Markers optionally carry imageData — when they do, a screenshot is saved
   // alongside the marker and the block renders both the timestamp and the frame.
 
-  const insertMarkerInline = async (timestamp: number, imageData?: string) => {
+  const insertMarkerInline = async (timestamp: number, imageData?: string, icon?: string) => {
     const formatted = formatSeconds(timestamp);
     const currentVideoId = videoIdRef.current;
     const currentVideoUrl = videoUrlRef.current;
     const markerId = 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+
+    const markerIcon = icon || selectedMarkerIconRef.current;
+    const iconDef = MARKER_ICONS.find(m => m.key === markerIcon) ?? MARKER_ICONS[0];
+    const borderColor = getMarkerColor(markerIcon);
 
     // Build a YouTube deep-link to this exact timestamp
     const deepLink = currentVideoUrl
@@ -303,8 +441,8 @@ export default function App() {
       : '';
 
     try {
-      await saveMarkerRecord(markerId, currentVideoId, timestamp, 'Marker');
-      console.log('[NullNote] Marker saved — id:', markerId);
+      await saveMarkerRecord(markerId, currentVideoId, timestamp, 'Marker', markerIcon);
+      console.log('[NullNote] Marker saved — id:', markerId, 'icon:', markerIcon);
     } catch (e) {
       console.error('[NullNote] Failed to save marker:', e);
     }
@@ -318,7 +456,7 @@ export default function App() {
         await saveScreenshotBlob(scrId, currentVideoId, timestamp, blob);
         const objectUrl = URL.createObjectURL(blob);
         objectUrlsRef.current.push(objectUrl);
-        screenshotHtml = `<img src="${objectUrl}" loading="lazy" data-screenshot-id="${scrId}" style="width:100%;display:block;border-radius:8px;margin:10px 0 6px;" class="screenshot-img" />`;
+        screenshotHtml = `<img src="${objectUrl}" loading="lazy" data-screenshot-id="${scrId}" style="width:100%;display:block;border-radius:8px;border:3px solid ${borderColor};box-sizing:border-box;margin-top:6px;" class="screenshot-img" />`;
         console.log('[NullNote] Marker frame saved — scrId:', scrId);
       } catch (e) {
         console.error('[NullNote] Failed to save marker screenshot:', e);
@@ -326,21 +464,18 @@ export default function App() {
     }
 
     const html = `
-      <div class="marker-badge" data-marker-id="${markerId}" data-timestamp="${timestamp}"
-        data-video-url="${deepLink}" data-video-id="${currentVideoId}"
+      <div
+        class="marker-badge"
+        data-timestamp="${timestamp}"
+        data-marker-id="${markerId}"
+        data-marker-icon="${markerIcon}"
+        data-video-url="${deepLink}"
+        data-video-id="${currentVideoId}"
         contenteditable="false"
-        style="margin:14px 0;border-radius:10px;border:1.5px solid #fcd34d;background:#fffbeb;padding:10px 12px;cursor:pointer;user-select:none;">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div style="display:flex;align-items:center;gap:7px;">
-            <span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px;background:#f59e0b;flex-shrink:0;">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-            </span>
-            <span style="font-weight:700;font-size:13px;color:#92400e;">Marker</span>
-          </div>
-          <span style="font-family:monospace;font-size:12px;font-weight:600;color:#b45309;background:#fef3c7;padding:2px 8px;border-radius:20px;border:1px solid #fcd34d;">${formatted}</span>
-        </div>
+        style="margin:12px 0;padding:0;user-select:none;display:flex;flex-direction:column;gap:2px;"
+      >
+        <a href="${deepLink}" target="_blank" class="timestamp-link" style="display:flex;align-items:center;text-decoration:none;font-family:ui-monospace,'JetBrains Mono','Fira Code',monospace;font-size:15px;color:#94a3b8;font-weight:600;letter-spacing:0.02em;line-height:1;margin:0;padding:0;cursor:pointer;"><img src="${chrome.runtime.getURL('icons/' + iconDef.file)}" style="width:26px;height:26px;margin-right:6px;" />${formatted}</a>
         ${screenshotHtml}
-        ${deepLink ? `<div style="margin-top:8px;font-size:11px;color:#b45309;opacity:0.7;">🔗 Click to seek to ${formatted}</div>` : ''}
       </div>
       <p><br></p>
     `;
@@ -353,7 +488,21 @@ export default function App() {
   const insertScreenshotInline = async (timestamp: number, imageData: string) => {
     const formatted = formatSeconds(timestamp);
     const currentVideoId = videoIdRef.current;
+    const currentVideoUrl = videoUrlRef.current;
     const id = 'scr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+
+    const markerIcon = selectedMarkerIconRef.current;
+    const borderColor = getMarkerColor(markerIcon);
+
+    const deepLink = currentVideoUrl
+      ? (() => {
+          try {
+            const u = new URL(currentVideoUrl);
+            u.searchParams.set('t', String(timestamp));
+            return u.toString();
+          } catch { return ''; }
+        })()
+      : '';
 
     let blob: Blob;
     try {
@@ -374,9 +523,23 @@ export default function App() {
     objectUrlsRef.current.push(objectUrl);
 
     const html = `
-      <div class="screenshot-block marker-badge" data-timestamp="${timestamp}" data-screenshot-id="${id}" contenteditable="false" style="margin:16px 0;padding:12px 0;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;cursor:pointer;user-select:none;">
-        <img src="${objectUrl}" loading="lazy" data-screenshot-id="${id}" style="width:100%;display:block;margin-bottom:8px;" class="screenshot-img" />
-        <div style="font-family:monospace;font-size:13px;color:#64748b;">Timestamp: ${formatted}</div>
+      <div
+        class="screenshot-block marker-badge"
+        data-timestamp="${timestamp}"
+        data-screenshot-id="${id}"
+        data-video-url="${deepLink}"
+        data-video-id="${currentVideoId}"
+        contenteditable="false"
+        style="margin:12px 0;padding:0;user-select:none;display:flex;flex-direction:column;gap:2px;"
+      >
+        <a href="${deepLink}" target="_blank" class="timestamp-link" style="display:flex;align-items:center;text-decoration:none;font-family:ui-monospace,'JetBrains Mono','Fira Code',monospace;font-size:15px;color:#94a3b8;font-weight:600;letter-spacing:0.02em;line-height:1;margin:0;padding:0;cursor:pointer;"><span style="font-size:20px;margin-right:6px;">📷</span>${formatted}</a>
+        <img
+          src="${objectUrl}"
+          loading="lazy"
+          data-screenshot-id="${id}"
+          style="width:100%;display:block;border-radius:8px;border:3px solid ${borderColor};box-sizing:border-box;margin-top:6px;"
+          class="screenshot-img"
+        />
       </div>
       <p><br></p>
     `;
@@ -402,12 +565,16 @@ export default function App() {
 
   const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
     saveSelection();
-    const badge = (e.target as HTMLElement).closest('.marker-badge');
-    if (badge) {
-      const ts = Number(badge.getAttribute('data-timestamp'));
-      if (!isNaN(ts)) {
-        // Primary: seek video in the active tab
-        seekVideo(ts);
+    // Only seek when clicking the specific timestamp link, not the whole badge/image
+    const link = (e.target as HTMLElement).closest('.timestamp-link');
+    if (link) {
+      e.preventDefault(); // Prevent navigating to the href on standard left click
+      const badge = link.closest('.marker-badge');
+      if (badge) {
+        const ts = Number(badge.getAttribute('data-timestamp'));
+        if (!isNaN(ts)) {
+          seekVideo(ts);
+        }
       }
     }
   };
@@ -418,8 +585,15 @@ export default function App() {
   };
 
   const handleMarker = () => {
-    console.log('[NullNote] Marker button clicked');
-    sendToContentScript({ type: 'manualMarker' });
+    console.log('[NullNote] Marker button clicked — icon:', selectedMarkerIconRef.current);
+    sendToContentScript({ type: 'manualMarker', icon: selectedMarkerIconRef.current });
+  };
+
+  const handleMarkerIconChange = async (icon: string) => {
+    setSelectedMarkerIconState(icon);
+    await setSelectedMarkerIconInDb(icon);
+    chrome.runtime.sendMessage({ type: 'selectedMarkerIconChanged', icon });
+    console.log('[NullNote] Marker icon changed:', icon);
   };
 
   const handleToggleAutoSnap = async () => {
@@ -537,8 +711,10 @@ export default function App() {
   );
 
   return (
-    <main className="h-screen overflow-hidden flex flex-col select-none bg-white text-slate-900">
+    <main className={`h-screen overflow-hidden flex flex-col select-none bg-white text-slate-900 ${imageOutlineEnabled ? 'image-outline-enabled' : 'image-outline-disabled'}`}>
       <style>{`
+        /* Global override to disable screenshot outlines retroactively */
+        .image-outline-disabled .screenshot-img { border-width: 0px !important; }
         :root {
           --accent: #f59e0b;
           --accent-dark: #b45309;
@@ -718,10 +894,13 @@ export default function App() {
         {/* Marker */}
         <button type="button" className="tool-btn" onClick={handleMarker} title="Add Marker (H)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path>
           </svg>
           Marker
         </button>
+
+        {/* Marker Icon Picker */}
+        <MarkerIconPicker selected={selectedMarkerIcon} onChange={handleMarkerIconChange} iconUrl={iconUrl} />
 
         {/* Keyboard hints */}
         <div style={{ marginLeft:'auto', display:'flex', gap:4 }}>
