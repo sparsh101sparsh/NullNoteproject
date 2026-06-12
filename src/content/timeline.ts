@@ -77,40 +77,79 @@ export function renderTimelineMarkers(
     img.style.pointerEvents = 'none';
     marker.appendChild(img);
 
-    // Tooltip
+    // Tooltip — styled to match sidepanel theme
     const tooltip = document.createElement('div');
     tooltip.className = 'lecturesnap-tooltip';
-    tooltip.textContent = `${formatSeconds(entry.timestamp)}${entry.note ? ` · ${entry.note}` : ''}`;
     tooltip.style.position = 'absolute';
-    tooltip.style.bottom = '32px';
-    tooltip.style.background = 'rgba(15,23,42,0.92)';
-    tooltip.style.backdropFilter = 'blur(8px)';
-    tooltip.style.color = '#f8fafc';
-    tooltip.style.border = '1px solid rgba(255,255,255,0.10)';
-    tooltip.style.borderRadius = '6px';
-    tooltip.style.padding = '4px 8px';
-    tooltip.style.fontSize = '11px';
-    tooltip.style.fontWeight = '500';
-    tooltip.style.fontFamily = 'system-ui, sans-serif';
+    tooltip.style.bottom = '36px';
+    tooltip.style.display = 'flex';
+    tooltip.style.alignItems = 'center';
+    tooltip.style.gap = '6px';
+
+    // Match sidepanel card style: white bg, subtle border, soft shadow
+    tooltip.style.background = '#ffffff';
+    tooltip.style.border = '1.5px solid #e8ecf0';
+    tooltip.style.borderRadius = '9px';
+    tooltip.style.padding = '5px 10px 5px 7px';
+    tooltip.style.boxShadow = '0 4px 16px rgba(0,0,0,0.10)';
+
+    // Font matches sidepanel (Inter)
+    tooltip.style.fontFamily = "'Inter', system-ui, sans-serif";
     tooltip.style.whiteSpace = 'nowrap';
     tooltip.style.pointerEvents = 'none';
     tooltip.style.opacity = '0';
-    tooltip.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
     tooltip.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
     tooltip.style.zIndex = '99999';
 
+    // Small marker icon inside tooltip
+    const tipIcon = document.createElement('img');
+    tipIcon.src = chrome.runtime.getURL('icons/' + file);
+    tipIcon.style.width = '14px';
+    tipIcon.style.height = '14px';
+    tipIcon.style.objectFit = 'contain';
+    tipIcon.style.flexShrink = '0';
+    tipIcon.style.pointerEvents = 'none';
+    tooltip.appendChild(tipIcon);
+
+    // Timestamp — amber accent, matches sidepanel marker timestamp color
+    const tipTime = document.createElement('span');
+    tipTime.textContent = formatSeconds(entry.timestamp);
+    tipTime.style.fontSize = '12px';
+    tipTime.style.fontWeight = '700';
+    tipTime.style.color = '#f59e0b';
+    tipTime.style.letterSpacing = '-0.2px';
+    tooltip.appendChild(tipTime);
+
+    // Note text if present
+    if (entry.note) {
+      const tipDot = document.createElement('span');
+      tipDot.textContent = '·';
+      tipDot.style.fontSize = '12px';
+      tipDot.style.color = '#94a3b8';
+      tipDot.style.margin = '0 1px';
+      tooltip.appendChild(tipDot);
+
+      const tipNote = document.createElement('span');
+      tipNote.textContent = entry.note.length > 28 ? entry.note.slice(0, 28) + '…' : entry.note;
+      tipNote.style.fontSize = '12px';
+      tipNote.style.fontWeight = '500';
+      tipNote.style.color = '#374151';
+      tipNote.style.maxWidth = '160px';
+      tipNote.style.overflow = 'hidden';
+      tipNote.style.textOverflow = 'ellipsis';
+      tipNote.style.whiteSpace = 'nowrap';
+      tooltip.appendChild(tipNote);
+    }
+
     // Clamp tooltip so it doesn't overflow off-screen at edges
     if (position < 10) {
-      // Near left edge — align left
       tooltip.style.left = '0';
       tooltip.style.transform = 'translateY(4px)';
     } else if (position > 90) {
-      // Near right edge — align right
       tooltip.style.right = '0';
       tooltip.style.left = 'auto';
       tooltip.style.transform = 'translateY(4px)';
     } else {
-      // Center normally
       tooltip.style.left = '50%';
       tooltip.style.transform = 'translateX(-50%) translateY(4px)';
     }
