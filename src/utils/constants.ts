@@ -5,6 +5,8 @@ export const SCREENSHOTS_STORE = 'screenshots';
 export const MARKERS_STORE = 'markers';
 export const SETTINGS_STORE = 'settings';
 
+export const ENABLE_GOOGLE_DRIVE = false;
+
 export const AUTO_CAPTURE_KEY = 'autoCaptureEnabled';
 export const AUTO_CAPTURE_INTERVAL_KEY = 'autoCaptureInterval';
 
@@ -14,6 +16,7 @@ export const SETTINGS_INCLUDE_SCREENSHOTS = 'includeScreenshots';
 export const SETTINGS_AUTOSNAP_ON_OPEN = 'autosnapOnOpen';
 export const SETTINGS_SELECTED_MARKER_ICON = 'selectedMarkerIcon';
 export const SETTINGS_IMAGE_OUTLINE = 'imageOutlineEnabled';
+export const SETTINGS_GOOGLE_DRIVE_STATE = 'googleDriveState';
 
 export const DEFAULT_CAPTURE_INTERVAL = 30;
 export const DEFAULT_MARKER_ICON = 'MarkIcon1';
@@ -36,6 +39,12 @@ export const STORAGE_MESSAGE_TYPES = {
   captureVisibleTab: 'captureVisibleTab',
   exportData: 'exportData',
   openSidePanel: 'openSidePanel',
+  googleDrive: {
+    getState: 'googleDrive.getState',
+    connect: 'googleDrive.connect',
+    disconnect: 'googleDrive.disconnect',
+    ensureRootFolder: 'googleDrive.ensureRootFolder'
+  }
 } as const;
 
 export const SIDE_PANEL_TITLE = 'NullNote';

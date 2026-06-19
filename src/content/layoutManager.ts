@@ -58,6 +58,7 @@ export class LayoutManager {
     setTimeout(() => window.dispatchEvent(new Event('resize')), 50);
 
     console.log('[NullNote] Workspace active — player relocated natively into fixed viewport');
+    window.dispatchEvent(new CustomEvent('nullnote-workspace-opened'));
   }
 
   hide(): void {
@@ -96,6 +97,7 @@ export class LayoutManager {
     this.player = null;
 
     console.log('[NullNote] Workspace closed — DOM restored');
+    window.dispatchEvent(new CustomEvent('nullnote-workspace-closed'));
   }
 
   toggle(): void {
@@ -119,25 +121,6 @@ export class LayoutManager {
     this.sidebarHost = document.createElement('div');
     this.sidebarHost.className = 'nullnote-sidebar-host';
 
-    // ── Header bar ──────────────────────────────────────────────────────────
-    const header = document.createElement('div');
-    header.className = 'nullnote-fs-header';
-
-    const closeBtn = document.createElement('button');
-    closeBtn.type = 'button';
-    closeBtn.className = 'nullnote-fs-close';
-    closeBtn.title = 'Close Workspace (ESC)';
-    closeBtn.innerHTML = `
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="2.5"
-           stroke-linecap="round" stroke-linejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18"/>
-        <line x1="6" y1="6" x2="18" y2="18"/>
-      </svg>`;
-    closeBtn.addEventListener('click', (e) => { e.stopPropagation(); this.hide(); });
-
-    header.appendChild(closeBtn);
-
     // ── Iframe ──────────────────────────────────────────────────────────────
     const iframe = document.createElement('iframe');
     iframe.src = chrome.runtime.getURL('src/sidepanel/index.html');
@@ -145,7 +128,6 @@ export class LayoutManager {
     iframe.className = 'nullnote-fs-iframe';
     iframe.setAttribute('allow', 'clipboard-write');
 
-    this.sidebarHost.appendChild(header);
     this.sidebarHost.appendChild(iframe);
 
     this.workspace.appendChild(this.videoHost);
@@ -161,13 +143,6 @@ export class LayoutManager {
     style.textContent = `
       :root {
         --nullnote-sidebar-width: 440px;
-      }
-
-      /* Compact mode for narrower screens */
-      @media (max-width: 1200px) {
-        :root {
-          --nullnote-sidebar-width: 340px;
-        }
       }
 
       /* ---- FIXED WORKSPACE (Zero Native Fullscreen) ---- */
@@ -216,36 +191,10 @@ export class LayoutManager {
         position: relative;
       }
 
-      /* Header */
-      .nullnote-fs-header {
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        padding: 8px 14px 4px;
-        background: #fff;
-        border-bottom: none;
-        flex-shrink: 0;
-      }
-      .nullnote-fs-close {
-        width: 28px;
-        height: 28px;
-        background: rgba(0,0,0,0.07);
-        border: none;
-        border-radius: 7px;
-        color: #475569;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: background 0.15s;
-      }
-      .nullnote-fs-close:hover {
-        background: rgba(0,0,0,0.14);
-        color: #0f172a;
-      }
       .nullnote-fs-iframe {
         flex: 1;
         width: 100%;
+        height: 100%;
         border: none;
         background: #fff;
         display: block;

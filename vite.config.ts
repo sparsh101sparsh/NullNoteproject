@@ -17,6 +17,7 @@ export default defineConfig({
         sidepanel: path.resolve(__dirname, 'src/sidepanel/index.html'),
         popup: path.resolve(__dirname, 'src/popup/index.html'),
         settings: path.resolve(__dirname, 'src/settings/index.html'),
+        onboarding: path.resolve(__dirname, 'src/onboarding/index.html'),
       },
       output: {
         entryFileNames: '[name].js',

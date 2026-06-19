@@ -3,7 +3,7 @@
   "name": "NullNote",
   "version": "0.1.0",
   "description": "NullNote is a simple YouTube note sidebar with screenshots, auto capture, and export.",
-  "permissions": ["storage", "activeTab", "scripting", "tabs", "commands"],
+  "permissions": ["storage", "activeTab", "scripting", "tabs", "commands", "identity"],
   "host_permissions": ["*://*.youtube.com/*"],
   "background": {
     "service_worker": "background.js"
@@ -11,9 +11,9 @@
   "action": {
     "default_title": "Open NullNote",
     "default_icon": {
-      "16": "icons/main_puslishing_icon.png",
-      "48": "icons/main_puslishing_icon.png",
-      "128": "icons/main_puslishing_icon.png"
+      "16": "icons/newmainicon.png",
+      "48": "icons/newmainicon.png",
+      "128": "icons/newmainicon.png"
     },
     "default_popup": "src/popup/index.html"
   },
@@ -49,8 +49,17 @@
     }
   },
   "icons": {
-    "16": "icons/main_puslishing_icon.png",
-    "48": "icons/main_puslishing_icon.png",
-    "128": "icons/main_puslishing_icon.png"
+    "16": "icons/newmainicon.png",
+    "48": "icons/newmainicon.png",
+    "128": "icons/newmainicon.png"
+  },
+  "oauth2": {
+    "client_id": "899959014332-mbu8pce928079t6k7nmtaukiqac1fd7h.apps.googleusercontent.com",
+    "scopes": [
+      "openid",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/userinfo.email",
+      "https://www.googleapis.com/auth/userinfo.profile"
+    ]
   }
 }

@@ -193,10 +193,10 @@ async function setSetting<T>(key: string, value: T): Promise<void> {
 // ─── SETTINGS PAGE ACCESSORS ───────────────────────────────────────────────
 
 
-export async function getDefaultExportFormat(): Promise<'pdf' | 'docs' | 'markdown'> {
-  return getSetting<'pdf' | 'docs' | 'markdown'>(SETTINGS_DEFAULT_EXPORT_FORMAT, 'pdf');
+export async function getDefaultExportFormat(): Promise<'pdf' | 'docs'> {
+  return getSetting<'pdf' | 'docs'>(SETTINGS_DEFAULT_EXPORT_FORMAT, 'pdf');
 }
-export async function setDefaultExportFormat(v: 'pdf' | 'docs' | 'markdown') {
+export async function setDefaultExportFormat(v: 'pdf' | 'docs') {
   return setSetting(SETTINGS_DEFAULT_EXPORT_FORMAT, v);
 }
 
@@ -215,7 +215,7 @@ export async function setIncludeScreenshots(v: boolean) {
 }
 
 export async function getImageOutlineEnabled(): Promise<boolean> {
-  return getSetting<boolean>(SETTINGS_IMAGE_OUTLINE, false);
+  return getSetting<boolean>(SETTINGS_IMAGE_OUTLINE, true);
 }
 export async function setImageOutlineEnabled(v: boolean) {
   return setSetting(SETTINGS_IMAGE_OUTLINE, v);
@@ -261,5 +261,11 @@ export async function exportAllDataAsJson(): Promise<string> {
     id: s.id, videoId: s.videoId, timestamp: s.timestamp, note: s.note, createdAt: s.createdAt
   }));
   return JSON.stringify({ exportedAt: new Date().toISOString(), documents, markers, screenshots: screenshotsClean }, null, 2);
+}
+
+export async function getAllDocuments(): Promise<DocumentRecord[]> {
+  const db = await openNullNoteDB();
+  const docs = await db.getAll(DOCUMENTS_STORE);
+  return docs as DocumentRecord[];
 }
 

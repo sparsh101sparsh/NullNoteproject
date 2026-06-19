@@ -1,0 +1,829 @@
+================================================================================
+                           NULLNOTE CHROME EXTENSION
+                       INTERNAL ENGINEERING SPECIFICATION
+================================================================================
+Author: Antigravity Def Def Architect
+Maturity: Release-ready core layout with robust injection pipeline
+Target Audience: Senior Systems / Extension Engineers
+
+================================================================================
+SECTION 1 - PROJECT OVERVIEW
+================================================================================
+* WHAT THIS EXTENSION IS
+  NullNote is a high-productivity Chrome Extension designed specifically for 
+  academics, developers, and students who study and take notes while watching 
+  YouTube videos. It acts as a localized, rich-text notebook docked alongside 
+  the YouTube video player.
+
+* WHAT PROBLEM IT SOLVES
+  Traditional note-taking while watching educational videos (lectures, tutorials) 
+  requires switching tabs or windows, leading to context-switching overhead. 
+  NullNote resolves this by:
+  - Docker Integration: Relocating the recommendation sidebar of YouTube to 
+    insert a synchronized note panel.
+  - Interactive Timestamps: Letting users take notes tied to the current video 
+    second. Clicking a timestamp jumps the video back to that second.
+  - Visual Snaps: Capturing high-resolution video frames (manual or automatic 
+    intervals) and inserting them directly inline with the text.
+  - Local Privacy: Storing all data (documents, screenshot blobs, markers) 
+    locally in the browser using IndexedDB. No server-side syncing is required.
+  - Export Options: Exporting rich notes to PDF, MS Word (DOCX), or Markdown (MD).
+
+* MAIN DESIGN PHILOSOPHY
+  - Local-First & Privacy Centric: No cloud dependencies, no external APIs.
+  - DOM-Coexistence: Non-intrusive injection into YouTube's dynamic single-page 
+    application (SPA) layout, utilizing native mutation observers and window 
+    resizing to scale the player naturally without page breakages.
+  - Zero-Latency Screenshot Capture: Offloading frame extraction to an 
+    in-memory Canvas drawing pipeline, bypassing main-thread blocks.
+
+* CURRENT MATURITY LEVEL
+  Production-ready Core. The extension features a unified, document-centric 
+  model where notes are saved in raw HTML inside IndexedDB, and screenshots are 
+  represented as binary Blobs linked via unique IDs.
+
+* OVERALL ARCHITECTURE STYLE
+  NullNote uses a clean, hybrid architecture with:
+  1. Content Scripts: Runs in the context of the YouTube page. Intercepts key 
+     presses, injects DOM buttons in `.ytp-right-controls`, draws timeline 
+     markers over the progress bar, and manages the panel / workspace layouts.
+  2. Background Service Worker: Coordinates Chrome-specific actions (e.g. 
+     capturing tabs, options page initialization) and relays messages between 
+     the content scripts and Option/Popup panels.
+  3. React Extensions Pages (Iframe/Popup/Settings): Single-page applications 
+     built with React 18, TailwindCSS, and IndexedDB accessors to display 
+     user-facing sidepanels and settings.
+
+================================================================================
+SECTION 2 - COMPLETE FILE SYSTEM MAP
+================================================================================
+Below is the full tree structure of the repository, followed by detailed 
+breakdowns of every module.
+
+.
+├── README.md
+├── index.html
+├── package.json
+├── package-lock.json
+├── postcss.config.js
+├── tailwind.config.js
+├── tsconfig.json
+├── tsconfig.node.json
+├── vite.config.ts
+├── vite.background.config.ts
+├── vite.content.config.ts
+├── generate_pdf.cjs
+├── test-docx.ts
+├── test-pdf.ts
+├── test_timeline.html
+├── public
+│   ├── manifest.json
+│   └── icons
+│       ├── icon-16.png
+│       ├── icon-48.png
+│       ├── icon-128.png
+│       ├── capture.png
+│       ├── capture_icon.png
+│       ├── main_puslishing_icon.png
+│       ├── mark_icon1.png
+│       ├── mark_icon2.png
+│       ├── mark_icon3.png
+│       ├── marker.png
+│       ├── page_icon.png
+│       └── pin.png
+└── src
+    ├── background
+    │   └── serviceWorker.ts
+    ├── content
+    │   ├── index.ts
+    │   ├── fullscreen.ts
+    │   ├── keyboard.ts
+    │   ├── layoutManager.ts
+    │   ├── screenshot.ts
+    │   ├── timeline.ts
+    │   └── ui.ts
+    ├── export
+    │   └── exporters.ts
+    ├── hooks
+    │   ├── useDebouncedValue.ts
+    │   └── useNotebookData.ts (Deprecated)
+    ├── popup
+    │   ├── index.html
+    │   ├── main.tsx
+    │   └── App.tsx
+    ├── settings
+    │   ├── index.html
+    │   ├── main.tsx
+    │   └── App.tsx
+    ├── sidepanel
+    │   ├── index.html
+    │   ├── main.tsx
+    │   └── App.tsx
+    ├── storage
+    │   ├── db.ts
+    │   └── repository.ts
+    ├── styles
+    │   └── tailwind.css
+    └── utils
+        ├── constants.ts
+        ├── format.ts
+        ├── id.ts
+        └── types.ts
+
+--------------------------------------------------------------------------------
+MODULE DETAILED SPECIFICATION
+--------------------------------------------------------------------------------
+
+1. src/background/serviceWorker.ts
+   - Why it exists: Serves as the background service worker (manifest V3). Manages extension commands, settings database, tab capture events, and relays messages between isolated pages.
+   - Imports: STORAGE_MESSAGE_TYPES, setAutoCaptureEnabled, getAutoCaptureEnabled, getAutoCaptureInterval, setAutoCaptureInterval.
+   - Exports: None.
+   - Depends on: constants.ts, repository.ts.
+   - Dependent files: Manifest JSON (executes this script as background).
+   - Criticality: CRITICAL. Handles key combinations like Ctrl+Shift+S/A, tab capture API, options initialization.
+
+2. src/content/index.ts
+   - Why it exists: The main content script execution entry point. Orchestrates UI injections, SPA routing, keyboard handlers, and iframe creations on YouTube watch pages.
+   - Imports: captureVideoFrame, timeline utilities, attachKeyboardShortcuts, UI buttons, constants, types, FullscreenManager, LayoutManager.
+   - Exports: None.
+   - Depends on: screenshot.ts, timeline.ts, keyboard.ts, ui.ts, constants.ts, types.ts, fullscreen.ts, layoutManager.ts.
+   - Dependent files: vite.content.config.ts (entry point).
+   - Criticality: CRITICAL. This script connects the player controls and timeline markers directly to the YouTube DOM.
+
+3. src/content/fullscreen.ts
+   - Why it exists: Manages Escape key listener to close the fixed workspace panel on normal or native fullscreen views.
+   - Imports: None.
+   - Exports: FullscreenManager, FullscreenCallbacks.
+   - Depends on: None.
+   - Dependent files: index.ts.
+   - Criticality: CRITICAL. Binds the capture phase keydown listener on `Escape` to close the panel first instead of letting YouTube exit fullscreen directly.
+
+4. src/content/layoutManager.ts
+   - Why it exists: Creates a fixed viewport grid workspace (`#nullnote-fs-workspace`) covering the browser view. Moves the native `#movie_player` element to the left panel and loads the sidepanel iframe on the right.
+   - Imports: None.
+   - Exports: LayoutManager.
+   - Depends on: None.
+   - Dependent files: index.ts.
+   - Criticality: CRITICAL. Implements the zero-native-fullscreen workspace mode.
+
+5. src/content/keyboard.ts
+   - Why it exists: Catches page-level keyboard events (H, P, A, Ctrl+Shift+S) and ensures they do not trigger when the cursor is in input/comment fields.
+   - Imports: None.
+   - Exports: attachKeyboardShortcuts.
+   - Depends on: None.
+   - Dependent files: index.ts.
+   - Criticality: CRITICAL. Prevents YouTube default overrides during typing.
+
+6. src/content/screenshot.ts
+   - Why it exists: Extracts the current frame of the `<video>` element and outputs a Base64 data URL.
+   - Imports: None.
+   - Exports: captureVideoFrame.
+   - Depends on: None.
+   - Dependent files: index.ts.
+   - Criticality: CRITICAL. Visual screenshot engine of the content script.
+
+7. src/content/timeline.ts
+   - Why it exists: Renders custom timeline pin elements visually on top of YouTube's progress bar without causing layout shifts.
+   - Imports: NotebookEntry, formatSeconds, MARKER_ICONS, DEFAULT_MARKER_ICON.
+   - Exports: createTimelineOverlay, renderTimelineMarkers, findProgressContainer.
+   - Depends on: types.ts, format.ts, constants.ts.
+   - Dependent files: index.ts.
+   - Criticality: CRITICAL. Bridges the seekbar interactions with user notes.
+
+8. src/content/ui.ts
+   - Why it exists: DOM factories to output control buttons (Capture, Marker, AutoSnap, and the Workspace Logo button) with clean hover transitions.
+   - Imports: None.
+   - Exports: createCaptureButton, createMarkerButton, createAutoSnapButton, updateAutoSnapButton, createFullscreenPanelButton.
+   - Depends on: None.
+   - Dependent files: index.ts.
+   - Criticality: CRITICAL. Controls DOM layouts of the player controls.
+
+9. src/sidepanel/App.tsx
+   - Why it exists: Main sidepanel React UI module. Connects the user-facing rich text editor (contenteditable) to IndexedDB databases.
+   - Imports: useEffect, useRef, useState, useCallback, IndexedDB repository methods, formatSeconds, exporters, constants.
+   - Exports: Default App component.
+   - Depends on: repository.ts, format.ts, exporters.ts, constants.ts.
+   - Dependent files: sidepanel/main.tsx.
+   - Criticality: CRITICAL. The core note-taking and editor interface of the app.
+
+10. src/storage/db.ts
+    - Why it exists: Low-level IndexedDB database bootstrapper using `idb`. Defines structure and upgrading criteria for stores.
+    - Imports: openDB, IDBPDatabase, constants.
+    - Exports: openNullNoteDB, NullNoteDB.
+    - Depends on: constants.ts.
+    - Dependent files: repository.ts.
+    - Criticality: CRITICAL. Low-level IndexedDB driver.
+
+11. src/storage/repository.ts
+    - Why it exists: Main database abstraction layer. Exposes high-level async functions for document saves, screenshot logs, and marker records.
+    - Imports: openNullNoteDB, constants.
+    - Exports: getDocument, saveDocument, saveVideoTitle, saveScreenshotBlob, getScreenshotsForVideo, saveMarkerRecord, getMarkersForVideo, pruneOrphanedRecords, getters/setters for settings.
+    - Depends on: db.ts, constants.ts.
+    - Dependent files: serviceWorker.ts, App.tsx (sidepanel), App.tsx (settings).
+    - Criticality: CRITICAL. Unified access layer for persisted local databases.
+
+12. src/export/exporters.ts
+    - Why it exists: Handles generating outputs for PDF (via printing trick), DOCX (raw HTML documents), and Markdown (regex parser).
+    - Imports: getScreenshotsForVideo, formatSeconds.
+    - Exports: prepareSelfContainedHtml, convertHtmlToMarkdown, exportToPdf, exportToDocs, exportToMarkdown.
+    - Depends on: repository.ts, format.ts.
+    - Dependent files: App.tsx (sidepanel).
+    - Criticality: CRITICAL. Exporting driver.
+
+13. src/popup/App.tsx
+    - Why it exists: Direct action menu popup React UI. Provides quick panel navigation and triggers settings.
+    - Imports: useEffect, useMemo, STORAGE_MESSAGE_TYPES.
+    - Exports: Default PopupApp.
+    - Depends on: constants.ts.
+    - Dependent files: popup/main.tsx.
+    - Criticality: OPTIONAL. User-facing utility menu (could be replaced by option triggers).
+
+14. src/settings/App.tsx
+    - Why it exists: Option parameters page UI. Toggles capture intervals, visual elements, formats, backups, and deletes records.
+    - Imports: useEffect, useState, useCallback, repository accessors.
+    - Exports: Default SettingsApp.
+    - Depends on: repository.ts.
+    - Dependent files: settings/main.tsx.
+    - Criticality: OPTIONAL. User customization settings control.
+
+15. src/hooks/useDebouncedValue.ts
+    - Why it exists: Simple React hook for debouncing fast state updates.
+    - Imports: useEffect, useState.
+    - Exports: useDebouncedValue.
+    - Dependent files: Currently unused in sidepanel/App.tsx (autosave uses direct setTimeout).
+    - Criticality: OPTIONAL. Can be safely removed.
+
+16. src/hooks/useNotebookData.ts
+    - Why it exists: Deprecated. Left as empty file for compatibility.
+    - Exports: None.
+    - Criticality: SAFE TO REMOVE.
+
+17. src/utils/constants.ts
+    - Why it exists: Declares database store strings, action IDs, options naming conventions, and layout configuration keys.
+    - Imports: None.
+    - Exports: DB parameters, options strings, configurations, message IDs.
+    - Dependent files: Used by almost every script.
+    - Criticality: CRITICAL.
+
+18. src/utils/format.ts
+    - Why it exists: Numerical utility functions (e.g. converting seconds to H:MM:SS or MM:SS format, clamping calculations).
+    - Dependent files: timeline.ts, exporters.ts, App.tsx (sidepanel).
+    - Criticality: CRITICAL.
+
+19. src/utils/id.ts
+    - Why it exists: Exposes a simple randomized prefix generator.
+    - Dependent files: None (content and sidepanel script define IDs inline).
+    - Criticality: SAFE TO REMOVE.
+
+20. src/utils/types.ts
+    - Why it exists: Declares Typescript types for records, notebook entries, and metadata.
+    - Dependent files: index.ts, repository.ts, timeline.ts, sidepanel/App.tsx.
+    - Criticality: CRITICAL.
+
+================================================================================
+SECTION 3 - BUILD SYSTEM
+================================================================================
+* FRAMEWORK
+  React 18.2.0 (using standard functional hooks, JSX, and portals).
+
+* BUNDLER
+  Vite 4.5.14. Rollup acts as the underlying bundler for production.
+
+* PACKAGE MANAGER
+  npm (version lock file: package-lock.json).
+
+* VITE CONFIGURATION SPECIFICS
+  Vite operates in three separate configurations:
+  1. main config (vite.config.ts): Build system for standard React pages. It 
+     uses `@vitejs/plugin-react` and defines multi-page inputs:
+     - popup: `src/popup/index.html`
+     - sidepanel: `src/sidepanel/index.html`
+     - settings: `src/settings/index.html`
+     Output matches standard chunks/assets structure.
+  2. content config (vite.content.config.ts): Build configuration for the 
+     content script. It configures the build in Library mode:
+     - entry: `src/content/index.ts`
+     - format: `iife` (Immediately Invoked Function Expression)
+     - outDir: `dist`
+     - fileName: `content.js`
+     - emptyOutDir: `false` (forces preservation of compiled popup/settings/sidepanel files).
+  3. background config (vite.background.config.ts): Build configuration for 
+     the service worker. Matches Library mode:
+     - entry: `src/background/serviceWorker.ts`
+     - format: `iife`
+     - outDir: `dist`
+     - fileName: `background.js`
+     - emptyOutDir: `false`.
+
+* TYPESCRIPT SETUP
+  Strict typechecking configuration in `tsconfig.json`. Resolves `@/*` to 
+  `./src/*` via path configurations.
+
+* BUILD PIPELINES
+  - npm run build: executes `vite build && vite build --config vite.content.config.ts && vite build --config vite.background.config.ts`.
+    Vite produces output in `dist` folder: `content.js`, `background.js`, 
+    `popup.js`, `settings.js`, `sidepanel.js` alongside static html files and 
+    styles.
+
+================================================================================
+SECTION 4 - MANIFEST ANALYSIS (public/manifest.json)
+================================================================================
+The manifest file defines the configuration properties for the Chrome Extension:
+
+* manifest_version: 3 (Google Manifest V3 standard).
+* name: "NullNote" (Extension name).
+* version: "0.1.0" (Initial release version).
+* description: "NullNote is a simple YouTube note sidebar..."
+* permissions:
+  1. "storage": Required to save and sync global variables / default configurations.
+  2. "activeTab": Gives temporary host access to capture the current active tab via the tab capture API.
+  3. "scripting": Allows executing code injections programmatically (used as fallback for injecting `content.js` into YouTube pages).
+  4. "tabs": Used to query open tabs, check target URLs, or spawn options tabs.
+  5. "commands": Required to bind the global hotkeys.
+* host_permissions:
+  - `*://*.youtube.com/*`: Gives full host access to execute content scripts, intercept network calls, and query tab states on any YouTube page. If removed, the extension won't load on YouTube.
+* background:
+  - service_worker: "background.js". The background background listener. If it fails to boot, shortcuts, tab captures, and options tabs fail.
+* action:
+  - default_title: "Open NullNote".
+  - default_icon: Sets main branding logo.
+  - default_popup: `src/popup/index.html`. Mounts the popup utility panel.
+* options_ui:
+  - page: `src/settings/index.html`. Sets options page location.
+  - open_in_tab: `true`. Opens the settings panel in a full browser tab.
+* content_scripts:
+  - matches: `*://*.youtube.com/*`
+  - js: `["content.js"]`
+  - run_at: `document_idle` (injects when YouTube finishes loading shell elements).
+* web_accessible_resources:
+  - Exposes HTMLs (`sidepanel/index.html`, `settings/index.html`), scripts (`sidepanel.js`, `settings.js`), assets, and icons to YouTube frames. This allows the sidepanel to load inside a native YouTube column iframe.
+* commands (Shortcuts):
+  1. "open-notebook": Triggers `Ctrl+Shift+S`. Toggles the in-page dock.
+  2. "toggle-auto-capture": Triggers `Ctrl+Shift+A`. Starts or stops AutoSnap.
+
+================================================================================
+SECTION 5 - EXTENSION LIFECYCLE
+================================================================================
+Here is the sequence of events during NullNote's operation:
+
+1. Browser Starts / Extension Installs
+   - Chrome reads `manifest.json`.
+   - The service worker (`background.js`) registers its listeners: `chrome.runtime.onMessage`, `chrome.commands.onCommand`, and `chrome.runtime.onInstalled`.
+   - On install, service worker initializes default options (e.g., set `autoCaptureEnabled = false`).
+
+2. YouTube Page Loads
+   - Browser matches `*://*.youtube.com/*`.
+   - `content.js` is loaded at `document_idle`.
+   - `initialize()` is executed:
+     - Sets single-instance guard flag `__NULLNOTE_INITIALIZED__`.
+     - Calls `attachMessageHandlers()` to listen for background events.
+     - Spawns video detection loop (retries up to 8s for `<video>` tag).
+     - Resolves video element reference, reads stored user options, and loads video ID.
+     - Calls `attachPlayerMutationObserver()` to watch player changes.
+     - Calls `attachPlayerControls()` to inject the four control buttons into the controls bar.
+     - Calls `attachKeyboardShortcuts()`.
+     - Calls `waitForActionsRowAndInject()` to insert the "NullNote" action button under the video.
+     - Initializes `FullscreenManager` to intercept Escape inputs.
+     - Auto-opens the sidepanel if the URL matches a watch page.
+
+3. Popup Opens
+   - User clicks extension icon.
+   - `src/popup/index.html` loads, launching popup React code.
+   - React mounts `PopupApp`, reads extension icons, and renders options.
+   - User clicks "Open NullNote": sends `openSidePanel` message, background triggers `openInPagePanel` to the active YouTube tab, and popup closes.
+
+4. Sidepanel Iframe Mounts
+   - Content script `toggleInPagePanel()` creates a sticky container div `#nullnote-inpage-panel` on the right of the YouTube page (relocating recommendations column).
+   - Injected iframe loads `src/sidepanel/index.html`.
+   - React sidepanel mounts `App` and sends `sidepanel-ready` to the background.
+   - App reads database records for the current `videoId` in IndexedDB.
+   - React populates the rich-text editor (`contentEditable`).
+
+5. User Interacts (Typing / Snaps / Markers)
+   - User types: `handleInput()` detects inputs, sets debounced timeout (1s), and calls `triggerSaveAndMarkerUpdate()`.
+   - User clicks "Snap" or presses "P": content script captures video frame, converts it to base64, sends `insert-screenshot` message to sidepanel, sidepanel saves blob to database, and embeds the image inline.
+   - User clicks "Marker" or presses "H": content script sends `insert-marker` message to sidepanel, sidepanel inserts deep-linked timestamp badge.
+   - Every note mutation triggers database updates and updates the seekbar markers.
+
+6. Shutdown / Navigation
+   - User closes the panel: the iframe is removed, recommendations columns are restored, and timeline markers are cleared.
+   - User navigates to a new video: YouTube SPA router triggers `yt-navigate-finish`. The content script re-runs video reference checks, re-attaches control elements, and notifies the sidepanel to load the new video's document.
+
+================================================================================
+SECTION 6 - COMPLETE UI ANALYSIS
+================================================================================
+NullNote maps its interface layouts directly onto YouTube's DOM structures:
+
+--------------------------------------------------------------------------------
+1. POPUP INTERFACE (src/popup/App.tsx)
+--------------------------------------------------------------------------------
+ASCII Layout:
++------------------------------------+
+| [NullNote Logo] NullNote           |
+| Capture. Annotate. Remember.       |
+| +--------------------------------+ |
+| |  📒 Open NullNote              | |
+| +--------------------------------+ |
+| |  ⚙ Settings                    | |
+| +--------------------------------+ |
++------------------------------------+
+- Branding Card: Linear gradient wrapper (`bg-gradient-to-br from-white to-slate-50`). Shows logo (44px) next to titles.
+- Action Buttons: Large action cards. The primary button uses yellow gradients (`bg-gradient-to-r from-amber-400 to-amber-500`) with hover scale adjustments.
+
+--------------------------------------------------------------------------------
+2. SETTINGS INTERFACE (src/settings/App.tsx)
+--------------------------------------------------------------------------------
+ASCII Layout:
++------------------------------------+
+| [Logo] NullNote Settings           |
+| +--------------------------------+ |
+| | 📸 AutoSnap                    | |
+| | Capture interval: [10s][20s]...| |
+| | AutoSnap on open: [Toggle]     | |
+| +--------------------------------+ |
+| | ⌨️ Keyboard Shortcuts           | |
+| | Action           Key           | |
+| +--------------------------------+ |
+| | 🗄️ Data Management             | |
+| | Stats: [Docs][Screenshots][Pin]| |
+| | [Export JSON]  [Clear Data]    | |
+| +--------------------------------+ |
++------------------------------------+
+- Spacing: Fixed layout max-width of 2xl (672px), centered with 24px padding (`px-6 py-8`).
+- Toggle: Custom component utilizing switch roles and white circle sliders (`translate-x-6` when active).
+
+--------------------------------------------------------------------------------
+3. PLAYER CONTROLS (src/content/ui.ts & src/content/index.ts)
+--------------------------------------------------------------------------------
+ASCII Layout:
++-------------------------------------------------------------+
+| [Play] [Next] [Volume] 0:02 / 3:13    [📷] [📍] [📸] [Ø] [⚙] |
++-------------------------------------------------------------+
+- Injected Buttons: Placed inside `.ytp-right-controls` to the left of Settings.
+- Positioning: Width (36px), height (36px) matching standard YouTube buttons.
+- Hover Effects: Scaling transitions (`scale(1.08)`) with opacity shifts (`opacity: 1`).
+
+--------------------------------------------------------------------------------
+4. timeline OVERLAY (src/content/timeline.ts)
+--------------------------------------------------------------------------------
+ASCII Layout:
+                     [ 0:02 · Marker ]   <-- Float Tooltip (clamped at edges)
+                             |
+----------------------------[📍]----------------------------  <-- YouTube Seekbar
+- Positioning: Overlay absolute container aligned to bottom of seekbar. Clamps markers left/right based on video percentage.
+
+================================================================================
+SECTION 7 - REACT COMPONENT ANALYSIS
+================================================================================
+
+1. APP COMPONENT (src/sidepanel/App.tsx)
+   - Purpose: Main notes canvas and editing dashboard.
+   - State Variables:
+     - `videoId` (string): Active YouTube video ID.
+     - `videoTitle` (string): Video name.
+     - `videoUrl` (string): Video link.
+     - `isEditingTitle` (boolean): Flag to toggle editing title field.
+     - `autoCaptureEnabled` (boolean): Status of AutoSnap.
+     - `autoCaptureInterval` (number): Interval for AutoSnap.
+     - `exportMenuOpen` (boolean): Toggles export dropdown visibility.
+     - `searchOpen` (boolean): Toggles search bar visibility.
+     - `searchQuery` (string): Search query string.
+     - `isEditorEmpty` (boolean): Displays placeholder text when true.
+     - `selectedMarkerIcon` (string): Selected marker icon color key.
+     - `imageOutlineEnabled` (boolean): Toggles screenshot outlines.
+   - Refs:
+     - `editorRef`: References `contentEditable` element.
+     - `saveTimeoutRef`: Debounce timer for IndexedDB saves.
+     - `savedRangeRef`: Caches selection coordinates when editing notes.
+   - Side Effects (useEffect):
+     - Empty dependency: Loads active tab details, starts database settings queries.
+     - dependency `[videoId]`: Triggers document lookup, restores screenshot links and seekbar markers.
+     - dependency `[searchQuery]`: Debounces search highlight operations.
+   - Re-render Triggers: State updates on inputs, selections, routing, or settings adjustments.
+
+2. MARKER ICON PICKER (src/sidepanel/App.tsx)
+   - Purpose: Dropdown menu to select marker pin color.
+   - Props: `selected` (string), `onChange` (handler), `iconUrl` (helper).
+   - State: `open` (boolean) to toggle dropdown state.
+   - Side Effects: Inside click handler checks node positions and closes dropdown when clicked outside.
+
+3. SETTINGS APP COMPONENT (src/settings/App.tsx)
+   - Purpose: Configures extension variables.
+   - State: `captureInterval`, `autosnapOnOpen`, `defaultFormat`, `includeTimestamps`, `includeScreenshots`, `imageOutlineEnabled`, `stats`, `clearConfirm`, `savedToast`.
+   - Render Conditions: Renders cards for AutoSnap, Shortcuts, Export formats, Appearance, and Data storage counts.
+
+================================================================================
+SECTION 8 - STATE MANAGEMENT
+================================================================================
+* DATABASE AS TRUTH
+  NullNote uses local database state instead of complex state libraries:
+  - React states cache options for local rendering.
+  - Changes are written to IndexedDB, which triggers background update messages.
+  - Subscribed contexts read changes from the database to ensure synchronization.
+
+* STATE UPDATE FLOWS
+  - User Types -> triggers `handleInput()` -> schedules 1s timeout -> saves 
+    HTML to IndexedDB -> sends update markers list message -> redraws seekbar markers.
+  - Video changes -> sends `video-changed` message to service worker -> sidepanel 
+    receives message -> resets state variables -> pulls new data from IndexedDB.
+
+================================================================================
+SECTION 9 - DATA MODEL
+================================================================================
+IndexedDB Schema structures:
+
+1. DocumentRecord
+   {
+     videoId: string;           // KeyPath
+     videoTitle: string;
+     documentContent: string;   // Rich-text HTML content
+     createdAt: number;
+     updatedAt: number;
+   }
+
+2. ScreenshotRecord
+   {
+     id: string;                // KeyPath (scr_...)
+     videoId: string;           // Indexed
+     timestamp: number;         // Capture timestamp (seconds)
+     imageBlob: Blob;           // Raw binary image data
+     note?: string;
+     createdAt: number;
+   }
+
+3. MarkerRecord
+   {
+     id: string;                // KeyPath (m_...)
+     videoId: string;           // Indexed
+     timestamp: number;         // Marker timestamp (seconds)
+     note: string;              // Text note
+     icon?: string;             // Marker icon color key
+     createdAt: number;
+   }
+
+4. SettingRecord
+   {
+     id: string;                // KeyPath (e.g. 'autoCaptureEnabled')
+     value: string | number | boolean;
+   }
+
+================================================================================
+SECTION 10 - STORAGE
+================================================================================
+NullNote coordinates storage across three local layers:
+
+1. Chrome Storage API (chrome.storage)
+   - Not used directly for note-taking documents or image binaries due to quota 
+     limits.
+   - Database handles settings directly to avoid quota limitations.
+
+2. IndexedDB (Via `idb` library wrapper)
+   - Database Name: `NullNoteDB`
+   - Version: 1
+   - Object Stores:
+     - `documents`: Key `videoId`
+     - `screenshots`: Key `id`, Index `videoId`
+     - `markers`: Key `id`, Index `videoId`
+     - `settings`: Key `id`
+
+3. In-Memory State / Cache
+   - Caches active tab ID, temporary Base64 strings, and active interval timers.
+
+================================================================================
+SECTION 11 - NOTE PROCESSING
+================================================================================
+* CREATE / LOAD DOCUMENT
+  - On video navigation, `getDocument()` is queried. If no record matches the 
+    `videoId`, a default empty record is created and saved in IndexedDB:
+    `<p>Start typing your lecture notes here...</p>`
+
+* EDIT DOCUMENT
+  - Modifying the text in the `contentEditable` area triggers `handleInput()`.
+  - Saves the inner HTML (`editorRef.current.innerHTML`) to `documents` store.
+
+* PRUNING AND ORPHANS
+  - Adding images or badges embeds unique IDs (`data-screenshot-id`, `data-marker-id`).
+  - During document saves, `pruneOrphanedRecords` queries IndexedDB records, 
+    compares them with the current editor DOM elements, and deletes any database 
+    records for images/markers that the user removed from the editor.
+
+* SEARCH HIGHLIGHTS
+  - Search runs on text node matches. Uses `TreeWalker` to scan and wrap matching 
+    strings inside `<mark class="search-highlight">` tags.
+  - Clearing searches normalizes node structures back to plain text.
+
+================================================================================
+SECTION 12 - IMAGE PROCESSING
+================================================================================
+* CAPTURE PIPELINE
+  - User snaps -> `captureVideoFrame()` draws video frame onto an in-memory canvas.
+  - Canvas encodes image as `image/jpeg` at 100% quality (prevents main-thread lags).
+  - Base64 string is sent to sidepanel React app.
+
+* STORAGE
+  - React decodes Base64 to a binary Blob:
+    `new Blob([new Uint8Array(byteNumbers)], { type: mimeType })`
+  - Blob is saved directly to IndexedDB.
+
+* RENDERING IN EDITOR
+  - The editor uses temporary Object URLs: `URL.createObjectURL(blob)`.
+  - The element is rendered as:
+    `<img src="blob:chrome-extension://..." data-screenshot-id="scr_..." />`
+  - On page load, the editor queries the database for screenshot Blobs and 
+    recreates the temporary Object URLs.
+
+* DELETION
+  - Deleting an image in the editor removes the element from the DOM.
+  - The next autosave detects that the screenshot ID is missing, and deletes the 
+    associated Blob from IndexedDB.
+
+================================================================================
+SECTION 13 - EVENT FLOW
+================================================================================
+User clicks "Marker" button in player controls:
+1. `click` event listener on `markerBtn` fires.
+2. Calls `addQuickHighlight()`.
+3. Captured timestamp and selected marker icon are packaged into an `insert-marker` message.
+4. Message is sent via `chrome.runtime.sendMessage`.
+5. Sidepanel React app receives the message in `handleMessage`.
+6. Calls `insertMarkerInline(timestamp, icon)`.
+7. Generates HTML link string with bookmark icon and deep link.
+8. Inserts HTML at cursor or appends it to the end of the editor.
+9. Sets 1s debounced save timer.
+10. `saveMarkerRecord` saves marker metadata in IndexedDB.
+11. Content script is notified to redraw seekbar markers.
+
+================================================================================
+SECTION 14 - DATA FLOW
+================================================================================
+How data travels across the extension contexts:
+
+[YouTube Video Element]
+   │ (Canvas extraction)
+   ▼
+[Content Script index.ts]
+   │
+   │ (chrome.runtime.sendMessage)
+   ▼
+[Service Worker background.js] (Relays settings or tab capture APIs)
+   │
+   │ (Direct message dispatch)
+   ▼
+[Sidepanel App Iframe]
+   │
+   ├─► [React State] ──► Render Editor DOM
+   │
+   ▼ (Binary Conversion)
+[IndexedDB / NullNoteDB] (Persisted data)
+
+================================================================================
+SECTION 15 - COMPONENT DEPENDENCY GRAPH
+================================================================================
+Here is the import dependency flow:
+
+--------------------------------------------------------------------------------
+CONTENT SCRIPT DEPENDENCIES:
+--------------------------------------------------------------------------------
+index.ts
+├── screenshot.ts
+├── timeline.ts
+│   ├── format.ts
+│   └── constants.ts
+├── keyboard.ts
+├── ui.ts
+├── fullscreen.ts
+│   └── ui.ts
+└── layoutManager.ts
+
+--------------------------------------------------------------------------------
+SIDEPANEL REACT DEPENDENCIES:
+--------------------------------------------------------------------------------
+sidepanel/main.tsx
+└── sidepanel/App.tsx
+    ├── storage/repository.ts
+    │   └── storage/db.ts
+    │       └── utils/constants.ts
+    ├── utils/format.ts
+    ├── export/exporters.ts
+    │   └── storage/repository.ts
+    └── utils/constants.ts
+
+================================================================================
+SECTION 16 - FEATURE INVENTORY
+================================================================================
+* Rich Text Editor: Stable
+* Interactive Timestamp Links: Stable
+* Timeline seekbar Markers: Stable
+* Manual Screenshot Frame Snaps: Stable
+* AutoSnap (Interval screenshot capture): Stable
+* Export to PDF / Word / Markdown: Stable
+* Retroactive Outline Border Styling: Stable
+* Pin Color Selection: Stable
+* Workspace layout mode: Stable
+* Background database cleanup: Stable
+
+================================================================================
+SECTION 17 - UNUSED / DEAD CODE
+================================================================================
+- `src/hooks/useNotebookData.ts`: Deprecated. Left as empty file for compatibility.
+- `src/utils/id.ts`: Contains `createId` utility which is unused, as the scripts 
+  generate IDs using inline random string patterns.
+
+================================================================================
+SECTION 18 - PERFORMANCE
+================================================================================
+* RENDERING
+  - Avoids rendering images as inline base64 string attributes in the live DOM. 
+    Instead, it uses browser Object URLs, preventing browser memory leaks and 
+    sluggishness.
+
+* STORAGE
+  - Saving documents is debounced (1s delay). Rapid typing does not trigger 
+    constant database writes.
+  - Transactions use correct read/write permissions.
+
+* IMAGE COMPRESSION
+  - Video frames are captured as JPEGs instead of PNGs to keep file sizes small 
+    and prevent browser memory overhead.
+
+================================================================================
+SECTION 19 - SECURITY
+================================================================================
+* HOST PERMISSIONS & PRIVACY
+  - Permissions are scoped specifically to `youtube.com` domains. The extension 
+    doesn't require broad network access.
+
+* CROSS-SITE SCRIPTING (XSS)
+  - Notes use `contentEditable` and save raw HTML inside IndexedDB. Since all 
+    data is stored locally, the risk of injection is minimal. However, importing 
+    untrusted JSON backups could execute scripts if not sanitized.
+
+* UNSAFE APIS
+  - Avoids using `eval()` or `new Function()`.
+  - Exporters use `DOMParser` for safe parsing instead of `innerHTML`.
+
+================================================================================
+SECTION 20 - TECHNICAL DEBT
+================================================================================
+1. Raw HTML Storage: Storing notes as raw HTML makes it easy to render, but 
+   hard to implement features like structured block formatting or granular 
+   search filters.
+2. Iframe Context Restrictions: Opening print dialogues directly from options 
+   or sidepanel contexts is blocked by modern browser security policies, 
+   requiring a fallback tab-creation logic.
+
+================================================================================
+SECTION 21 - FUTURE SCALABILITY
+================================================================================
+* GOOGLE DRIVE SYNC
+  - Binary screenshots will exceed storage limits quickly. You will need to 
+    export image data as blobs and upload them directly to Google Drive AppData 
+    folders, replacing local database paths.
+
+* 10,000 NOTES
+  - Loading thousands of documents could slow down IndexedDB queries. You will 
+    need pagination for document lookups, and virtualized lists for rendering 
+    markers in settings screens.
+
+================================================================================
+SECTION 22 - INTERNAL RULES / CODING CONVENTIONS
+================================================================================
+* NAMING CONVENTIONS
+  - Methods that modify databases are prefixed with `save` or `prune`.
+  - Content script DOM classes are prefixed with `nullnote-` or `lecturesnap-`.
+
+* UI CONVENTIONS
+  - Color styling defaults to Slate grey border lines and Amber/Orange hover 
+    accents (`#f59e0b`).
+  - Icons are rendered inline via SVG vectors or loaded as filtered white assets 
+    to match dark mode.
+
+================================================================================
+SECTION 23 - REVERSE ENGINEERING OWNER INTENTIONS
+================================================================================
+Why the project is built this way:
+1. Local Database over Cloud: NullNote was designed for offline study, avoiding 
+   the latency, server costs, and privacy concerns of cloud databases.
+2. Relocated DOM vs Overlay: Standard sidebar extensions use floating panels 
+   that cover YouTube videos. Relocating recommendation blocks ensures the 
+   video player scales naturally, providing a cleaner viewing experience.
+
+================================================================================
+SECTION 24 - AI ARCHITECTURAL ALIGNMENT
+================================================================================
+When adding new features in the future, follow these architectural constraints:
+1. Keep DOM injections inside content scripts simple. Do not modify YouTube's 
+   core player styles.
+2. Ensure image frame conversions utilize canvas drawings to keep performance high.
+3. Keep IndexedDB transactions read-only unless writing data to avoid lock-ups.
+
+================================================================================
+SECTION 25 - CONFIDENCE LEVEL
+================================================================================
+* Architecture, File Map, manifest configurations, database models, and build 
+  settings are CERTAIN. Verified directly by reading configuration scripts.
+* Performance optimizations are LIKELY. Supported by the codebase's use of 
+  debouncing and object URLs.
+* Security risks on imported JSON data are SPECULATIVE. The extension currently 
+  does not sanitize imported JSON data.
+================================================================================

@@ -1,0 +1,54 @@
+diff --git a/src/sidepanel/App.tsx b/src/sidepanel/App.tsx
+index 1234567..89abcde 100644
+--- a/src/sidepanel/App.tsx
++++ b/src/sidepanel/App.tsx
+@@ -393,7 +393,39 @@
+     }
+   }, []);
+ 
++  const checkForSlashCommands = () => {
++    const selection = window.getSelection();
++    if (!selection || selection.rangeCount === 0) return;
++    const range = selection.getRangeAt(0);
++
++    // Verify cursor is collapsed and in a text node
++    if (range.collapsed && range.startContainer.nodeType === Node.TEXT_NODE) {
++      const textNode = range.startContainer;
++      const offset = range.startOffset;
++      const textContent = textNode.textContent || '';
++
++      if (offset >= 2) {
++        const triggerText = textContent.slice(offset - 2, offset).toLowerCase();
++        if (triggerText === '/h' || triggerText === '/p') {
++          // 1. Trigger action
++          if (triggerText === '/h') {
++            handleMarker();
++          } else {
++            handleSnap();
++          }
++
++          // 2. Delete slash command characters from the text node
++          const before = textContent.slice(0, offset - 2);
++          const after = textContent.slice(offset);
++          textNode.textContent = before + after;
++
++          // 3. Move caret to where "/" was typed
++          const newRange = document.createRange();
++          newRange.setStart(textNode, offset - 2);
++          newRange.collapse(true);
++
++          selection.removeAllRanges();
++          selection.addRange(newRange);
++
++          // 4. Update the saved selection range reference
++          savedRangeRef.current = newRange;
++        }
++      }
++    }
++  };
++
+   const handleInput = () => {
++    checkForSlashCommands();
+     if (editorRef.current) {
+       const textVal = editorRef.current.textContent?.trim() || '';
+       const hasMedia = editorRef.current.querySelectorAll('img, .marker-badge').length > 0;

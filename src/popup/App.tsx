@@ -1,18 +1,11 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect } from 'react';
 import { STORAGE_MESSAGE_TYPES } from '@/utils/constants';
+import Logo from '@/components/Logo';
 
 export default function PopupApp() {
   useEffect(() => {
     document.body.classList.remove('dark');
     document.body.classList.add('light');
-  }, []);
-
-  const logoUrl = useMemo(() => {
-    try {
-      return chrome.runtime.getURL('icons/icon-128.png');
-    } catch {
-      return '/icons/icon-128.png';
-    }
   }, []);
 
   const openNullNote = () => {
@@ -39,11 +32,7 @@ export default function PopupApp() {
       <div className="flex flex-col gap-4">
         {/* Top Branding Card */}
         <section className="flex items-center gap-3.5 rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm">
-          <img
-            src={logoUrl}
-            alt="NullNote Logo"
-            className="h-11 w-11 shrink-0 object-contain rounded-xl shadow-sm border border-slate-100"
-          />
+          <Logo size={44} />
           <div className="flex flex-col">
             <h1 className="text-base font-bold tracking-tight text-slate-900">
               NullNote

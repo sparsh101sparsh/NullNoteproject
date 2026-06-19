@@ -1,7 +1,7 @@
 import { captureVideoFrame } from './screenshot';
 import { createTimelineOverlay, renderTimelineMarkers, findProgressContainer } from './timeline';
 import { attachKeyboardShortcuts } from './keyboard';
-import { createFullscreenPanelButton } from './ui';
+import { createFullscreenPanelButton, createLogoElement } from './ui';
 import { STORAGE_MESSAGE_TYPES, DEFAULT_MARKER_ICON } from '@/utils/constants';
 import type { NotebookEntry } from '@/utils/types';
 import { FullscreenManager } from './fullscreen';
@@ -17,6 +17,8 @@ interface PageState {
   captureTimer?: number;
   lastAutoCaptureTimestamp: number;
   selectedMarkerIcon: string;
+  sidebarOpen: boolean;
+  fullscreenWorkspaceOpen: boolean;
 }
 
 const state: PageState = {
@@ -28,6 +30,8 @@ const state: PageState = {
   autoCaptureInterval: 30,
   lastAutoCaptureTimestamp: 0,
   selectedMarkerIcon: DEFAULT_MARKER_ICON,
+  sidebarOpen: false,
+  fullscreenWorkspaceOpen: false,
 };
 
 // Singleton managers — created once per content script lifecycle
@@ -123,6 +127,12 @@ function ensurePanelOpenAndSend(message: any) {
 
 async function addQuickHighlight() {
   const meta = getVideoMetadata();
+  if (meta.timestamp === state.lastAutoCaptureTimestamp) {
+    console.log('[NullNote] Marker/Screenshot already captured at timestamp:', meta.timestamp, '— skipping duplicate');
+    return;
+  }
+  state.lastAutoCaptureTimestamp = meta.timestamp;
+
   console.log('[NullNote] Marker triggered — timestamp:', meta.timestamp);
 
   // Capture a frame from the video at this exact moment to embed in the marker
@@ -164,13 +174,47 @@ async function toggleAutoCapture() {
   chrome.runtime.sendMessage({ type: 'autoCaptureCommand', enabled: state.autoCaptureEnabled });
 }
 
+function findYouTubeSettingsButton(rightControls: Element): Element | null {
+  // Strategy 1: standard selector
+  let btn = rightControls.querySelector('.ytp-settings-button');
+  if (btn) return btn;
+
+  // Strategy 2: search by aria-label or title (Settings)
+  const buttons = rightControls.querySelectorAll('button');
+  for (const button of Array.from(buttons)) {
+    const label = (button.getAttribute('aria-label') || '').toLowerCase();
+    const title = (button.getAttribute('title') || '').toLowerCase();
+    if (label.includes('settings') || title.includes('settings')) {
+      return button;
+    }
+  }
+
+  // Strategy 3: lookup by class match or SVG icon inside
+  const svgIcons = rightControls.querySelectorAll('svg');
+  for (const svg of Array.from(svgIcons)) {
+    const useEl = svg.querySelector('use');
+    if (useEl && (useEl.getAttribute('href') || '').includes('settings')) {
+      const button = svg.closest('button');
+      if (button) return button;
+    }
+  }
+
+  // Strategy 4: fallback to traversal (Settings is usually next to fullscreen)
+  const fsButton = rightControls.querySelector('.ytp-fullscreen-button');
+  if (fsButton && fsButton.previousElementSibling) {
+    return fsButton.previousElementSibling;
+  }
+
+  return null;
+}
+
 function attachPlayerControls() {
   const rightControls = document.querySelector('.ytp-right-controls');
   if (!rightControls) {
     return;
   }
 
-  const settingsButton = rightControls.querySelector('.ytp-settings-button');
+  const settingsButton = findYouTubeSettingsButton(rightControls);
   if (!settingsButton) {
     return;
   }
@@ -178,8 +222,8 @@ function attachPlayerControls() {
   // Remove any pre-existing instances of our custom buttons to avoid duplicates
   document.querySelectorAll('.nullnote-fs-toggle-btn').forEach(el => el.remove());
 
-  // Only show workspace button in native fullscreen mode
-  if (!document.fullscreenElement) {
+  // Only show workspace button in native fullscreen mode or when the custom workspace is open
+  if (!document.fullscreenElement && !layoutManager.isOpen()) {
     return;
   }
 
@@ -190,10 +234,10 @@ function attachPlayerControls() {
     layoutManager.toggle();
   });
 
-  // Safe insertion with parent validation
+  // Safe insertion: always immediately to the right of the Settings button
   const parent = settingsButton.parentNode;
   if (parent && parent.contains(settingsButton)) {
-    parent.insertBefore(workspaceBtn, settingsButton);
+    parent.insertBefore(workspaceBtn, settingsButton.nextSibling);
   } else {
     rightControls.appendChild(workspaceBtn);
   }
@@ -206,19 +250,14 @@ function attachPlayerControls() {
 function createNullNoteActionButton(): HTMLElement {
   const btn = document.createElement('div');
   btn.id = 'nullnote-yt-action-btn';
-  btn.setAttribute('role', 'button');
-  btn.setAttribute('tabindex', '0');
-  btn.setAttribute('aria-label', 'Open NullNote');
-  btn.setAttribute('title', 'Open NullNote');
+  btn.setAttribute('role', 'group');
+  btn.setAttribute('aria-label', 'NullNote Action Button');
 
   btn.style.cssText = `
     display: inline-flex;
     align-items: center;
-    gap: 6px;
     height: 36px;
-    padding: 0 16px;
     border-radius: 18px;
-    cursor: pointer;
     font-family: "Roboto","Arial",sans-serif;
     font-size: 14px;
     font-weight: 500;
@@ -226,57 +265,260 @@ function createNullNoteActionButton(): HTMLElement {
     white-space: nowrap;
     user-select: none;
     flex-shrink: 0;
-    transition: background 0.1s ease;
     background: var(--yt-spec-badge-chip-background, rgba(0,0,0,0.05));
     color: var(--yt-spec-text-primary, inherit);
     border: none;
     outline: none;
+    position: relative;
   `;
 
-  // NullNote logo icon
-  const iconImg = document.createElement('img');
-  iconImg.src = chrome.runtime.getURL('icons/page_icon.png');
-  // Add CSS filter so the black icon appears white in dark mode, like YouTube icons
-  iconImg.style.cssText = 'width:18px;height:18px;object-fit:contain;margin-right:4px;filter:var(--yt-spec-icon-filter, none);';
+  // Left action part: icon + "NullNote" text
+  const mainPart = document.createElement('button');
+  mainPart.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    height: 100%;
+    padding-left: 16px;
+    padding-right: 6px;
+    background: transparent;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    transition: background 0.1s ease;
+    border-top-left-radius: 18px;
+    border-bottom-left-radius: 18px;
+  `;
+  mainPart.setAttribute('aria-label', 'Open NullNote');
+  mainPart.setAttribute('title', 'Open NullNote');
 
+  // NullNote logo icon
+  const logoContainer = createLogoElement(18);
+  logoContainer.style.marginRight = '4px';
+  logoContainer.style.filter = 'var(--yt-spec-icon-filter, none)';
 
   const labelEl = document.createElement('span');
   labelEl.textContent = 'NullNote';
 
-  btn.appendChild(iconImg);
-  btn.appendChild(labelEl);
+  mainPart.appendChild(logoContainer);
+  mainPart.appendChild(labelEl);
 
-  // Hover effect using yt-spec variables
-  btn.addEventListener('mouseenter', () => {
-    btn.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.10))';
+  // Right settings part: ⋮ icon
+  const menuPart = document.createElement('button');
+  menuPart.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding-left: 4px;
+    padding-right: 14px;
+    background: transparent;
+    border: none;
+    outline: none;
+    cursor: pointer;
+    color: inherit;
+    font-family: inherit;
+    font-size: 15px;
+    font-weight: bold;
+    transition: background 0.1s ease;
+    border-top-right-radius: 18px;
+    border-bottom-right-radius: 18px;
+  `;
+  menuPart.textContent = '⋮';
+  menuPart.setAttribute('aria-label', 'NullNote Settings');
+  menuPart.setAttribute('title', 'NullNote Settings');
+
+  // Hover effect for mainPart
+  mainPart.addEventListener('mouseenter', () => {
+    mainPart.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.05))';
   });
-  btn.addEventListener('mouseleave', () => {
-    btn.style.background = 'var(--yt-spec-badge-chip-background, rgba(0,0,0,0.05))';
+  mainPart.addEventListener('mouseleave', () => {
+    mainPart.style.background = 'transparent';
   });
-  btn.addEventListener('mousedown', () => {
-    btn.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.15))';
+  mainPart.addEventListener('mousedown', () => {
+    mainPart.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.10))';
   });
-  btn.addEventListener('mouseup', () => {
-    btn.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.10))';
+  mainPart.addEventListener('mouseup', () => {
+    mainPart.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.05))';
   });
 
-  btn.addEventListener('click', () => {
+  // Hover effect for menuPart
+  menuPart.addEventListener('mouseenter', () => {
+    menuPart.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.05))';
+  });
+  menuPart.addEventListener('mouseleave', () => {
+    menuPart.style.background = 'transparent';
+  });
+  menuPart.addEventListener('mousedown', () => {
+    menuPart.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.10))';
+  });
+  menuPart.addEventListener('mouseup', () => {
+    menuPart.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.05))';
+  });
+
+  // Click & Key events
+  mainPart.addEventListener('click', (e) => {
+    e.stopPropagation();
     toggleInPagePanel(false);
   });
-  btn.addEventListener('keydown', (e) => {
+  mainPart.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
+      e.stopPropagation();
       toggleInPagePanel(false);
     }
   });
 
+  menuPart.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleNullNoteContextMenu(menuPart);
+  });
+  menuPart.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleNullNoteContextMenu(menuPart);
+    }
+  });
+
+  btn.appendChild(mainPart);
+  btn.appendChild(menuPart);
+
   return btn;
 }
 
-function injectNullNoteActionButton() {
-  // Already injected
-  if (document.getElementById('nullnote-yt-action-btn')) return;
+function toggleNullNoteContextMenu(anchorButton: HTMLElement) {
+  const existing = document.getElementById('nullnote-context-menu');
+  if (existing) {
+    closeNullNoteContextMenu();
+  } else {
+    openNullNoteContextMenu(anchorButton);
+  }
+}
 
+function openNullNoteContextMenu(anchorButton: HTMLElement) {
+  closeNullNoteContextMenu();
+
+  const parentContainer = anchorButton.parentElement;
+  if (!parentContainer) return;
+
+  const menu = document.createElement('div');
+  menu.id = 'nullnote-context-menu';
+  menu.style.cssText = `
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 6px;
+    background: var(--yt-spec-raised-background, #fff);
+    border: 1.5px solid var(--yt-spec-badge-chip-background, #e8ecf0);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    padding: 6px;
+    z-index: 99999;
+    min-width: 140px;
+    display: flex;
+    flex-direction: column;
+    font-family: "Roboto","Arial",sans-serif;
+    font-size: 13.5px;
+    font-weight: 500;
+  `;
+
+  const settingsItem = document.createElement('button');
+  settingsItem.style.cssText = `
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    text-align: left;
+    color: var(--yt-spec-text-primary, #030303);
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: inherit;
+    transition: background 0.1s ease;
+  `;
+
+  settingsItem.innerHTML = `
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+    <span>Settings</span>
+  `;
+
+  settingsItem.addEventListener('mouseenter', () => {
+    settingsItem.style.background = 'var(--yt-spec-button-chip-background-hover, rgba(0,0,0,0.05))';
+  });
+  settingsItem.addEventListener('mouseleave', () => {
+    settingsItem.style.background = 'transparent';
+  });
+  settingsItem.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeNullNoteContextMenu();
+    chrome.runtime.sendMessage({ type: 'openOptionsPage' });
+  });
+
+  menu.appendChild(settingsItem);
+  parentContainer.appendChild(menu);
+
+  const clickOutsideHandler = (e: MouseEvent) => {
+    if (!menu.contains(e.target as Node) && !anchorButton.contains(e.target as Node)) {
+      closeNullNoteContextMenu();
+    }
+  };
+
+  document.addEventListener('click', clickOutsideHandler, { capture: true });
+  (menu as any)._clickOutsideHandler = clickOutsideHandler;
+}
+
+function closeNullNoteContextMenu() {
+  const menu = document.getElementById('nullnote-context-menu');
+  if (menu) {
+    if ((menu as any)._clickOutsideHandler) {
+      document.removeEventListener('click', (menu as any)._clickOutsideHandler, { capture: true });
+    }
+    menu.remove();
+  }
+}
+
+function findYouTubeMoreActionsButton(actionsRow: Element): Element | null {
+  // Try direct selectors
+  let btn = actionsRow.querySelector('button[aria-label="More actions"]') ||
+            actionsRow.querySelector('[aria-label="More actions"]') ||
+            actionsRow.querySelector('ytd-menu-renderer ytd-button-renderer:last-child button') ||
+            actionsRow.querySelector('yt-button-view-model:last-child button') ||
+            actionsRow.querySelector('#button-shape button');
+
+  if (btn) return btn;
+
+  const buttons = actionsRow.querySelectorAll('button');
+  for (const button of Array.from(buttons)) {
+    const label = (button.getAttribute('aria-label') || '').toLowerCase();
+    const title = (button.getAttribute('title') || '').toLowerCase();
+    if (label.includes('more actions') || label === 'more' || title.includes('more actions')) {
+      return button;
+    }
+  }
+
+  return null;
+}
+
+function getTopLevelChild(actionsRow: Element, child: Element): Element {
+  let curr = child;
+  while (curr.parentElement && curr.parentElement !== actionsRow) {
+    curr = curr.parentElement;
+  }
+  return curr;
+}
+
+function injectNullNoteActionButton() {
   // Try multiple selectors — YouTube's action bar varies by page variant
   const actionSelectors = [
     '#actions.ytd-watch-metadata',
@@ -294,47 +536,53 @@ function injectNullNoteActionButton() {
 
   if (!actionsRow) return;
 
-  const btn = createNullNoteActionButton();
+  // Find native three-dot button
+  const moreActionsBtn = findYouTubeMoreActionsButton(actionsRow);
+  if (!moreActionsBtn) return; // Wait for it to appear!
 
-  // Wrap in a flex container element matching YouTube's button renderer
-  const wrapper = document.createElement('div');
+  const anchor = getTopLevelChild(actionsRow, moreActionsBtn);
+  if (!anchor) return;
+
+  let wrapper = document.getElementById('nullnote-yt-action-wrapper');
+  if (wrapper) {
+    // If already injected, verify positioning: it must be immediately after the anchor
+    if (anchor.nextElementSibling !== wrapper) {
+      if (anchor.nextElementSibling) {
+        actionsRow.insertBefore(wrapper, anchor.nextElementSibling);
+      } else {
+        actionsRow.appendChild(wrapper);
+      }
+    }
+    return;
+  }
+
+  // Create button and wrapper
+  const btn = createNullNoteActionButton();
+  wrapper = document.createElement('div');
+  wrapper.id = 'nullnote-yt-action-wrapper';
   wrapper.style.cssText = 'display:inline-flex;align-items:center;flex-shrink:0;margin-left:8px;';
   wrapper.appendChild(btn);
 
-  // Insert after the "Like/Dislike" segment
-  const likeBtnGroup = actionsRow.querySelector('ytd-segment-like-dislike-button-view-model') ||
-    actionsRow.querySelector('like-button-view-model') ||
-    actionsRow.querySelector('ytd-toggle-button-renderer:first-child');
-
-  if (likeBtnGroup && likeBtnGroup.nextElementSibling) {
-    actionsRow.insertBefore(wrapper, likeBtnGroup.nextElementSibling);
+  if (anchor.nextElementSibling) {
+    actionsRow.insertBefore(wrapper, anchor.nextElementSibling);
   } else {
-    // Fallback: prepend to beginning or append to end
-    const shareBtn = actionsRow.querySelector('ytd-button-renderer[button-next]') ||
-      actionsRow.querySelector('yt-button-view-model') ||
-      null;
-
-    if (shareBtn && actionsRow.contains(shareBtn)) {
-      actionsRow.insertBefore(wrapper, shareBtn);
-    } else {
-      actionsRow.appendChild(wrapper);
-    }
+    actionsRow.appendChild(wrapper);
   }
 
-  console.log('[NullNote] Action button injected');
+  console.log('[NullNote] Action button injected after More Actions button');
 }
 
 function waitForActionsRowAndInject() {
   // Try immediately
   injectNullNoteActionButton();
-  if (document.getElementById('nullnote-yt-action-btn')) return;
+  if (document.getElementById('nullnote-yt-action-wrapper')) return;
 
   // Use MutationObserver to wait for the actions row to appear
   let attempts = 0;
   const observer = new MutationObserver(() => {
     attempts++;
     injectNullNoteActionButton();
-    if (document.getElementById('nullnote-yt-action-btn') || attempts > 40) {
+    if (document.getElementById('nullnote-yt-action-wrapper') || attempts > 40) {
       observer.disconnect();
     }
   });
@@ -353,7 +601,14 @@ async function loadAutoCaptureSettings() {
         state.autoCaptureEnabled = Boolean(response.enabled);
         state.autoCaptureInterval = Number(response.interval) || state.autoCaptureInterval;
       }
-      resolve();
+      // Load initial selected marker icon
+      chrome.runtime.sendMessage({ type: 'getSelectedMarkerIcon' }, (iconResp) => {
+        if (iconResp?.success && iconResp.icon) {
+          state.selectedMarkerIcon = iconResp.icon;
+          console.log('[NullNote] Loaded selected marker icon:', state.selectedMarkerIcon);
+        }
+        resolve();
+      });
     });
   });
 }
@@ -385,7 +640,13 @@ async function captureScreenshotForVideo(source: 'manual' | 'auto' = 'manual') {
     return;
   }
 
-  console.log('[NullNote] Screenshot triggered — timestamp:', Math.round(video.currentTime));
+  const { timestamp } = getVideoMetadata();
+  if (timestamp === state.lastAutoCaptureTimestamp) {
+    console.log('[NullNote] Screenshot already captured at timestamp:', timestamp, '— skipping duplicate');
+    return;
+  }
+
+  console.log('[NullNote] Screenshot triggered — timestamp:', timestamp);
 
   let imageData = '';
   try {
@@ -403,7 +664,8 @@ async function captureScreenshotForVideo(source: 'manual' | 'auto' = 'manual') {
     playShutterSound();
   }
 
-  const { timestamp } = getVideoMetadata();
+  state.lastAutoCaptureTimestamp = timestamp;
+
   const message = {
     type: 'insert-screenshot',
     timestamp,
@@ -477,12 +739,14 @@ function toggleInPagePanel(forceOpen = false) {
       existing.style.display = 'flex';
       const iframe = existing.querySelector('iframe');
       if (iframe) iframe.focus();
+      state.sidebarOpen = true;
       return;
     }
     // Close panel and restore recommendations
     existing.remove();
     hiddenNodes.forEach(node => { node.style.display = ''; });
     hiddenNodes.clear();
+    state.sidebarOpen = false;
     return;
   }
 
@@ -521,9 +785,10 @@ function toggleInPagePanel(forceOpen = false) {
   panel.id = panelId;
   panel.style.position = 'sticky';
   panel.style.top = '12px';
-  panel.style.width = '100%';
-  panel.style.minWidth = '380px';
-  panel.style.maxWidth = '440px';
+  panel.style.width = '440px';
+  panel.style.maxWidth = '100%';
+  panel.style.minWidth = '0';
+  panel.style.boxSizing = 'border-box';
   panel.style.height = 'calc(100vh - 24px)';
   panel.style.background = '#ffffff';
   panel.style.border = '1px solid rgba(0,0,0,0.08)';
@@ -533,6 +798,7 @@ function toggleInPagePanel(forceOpen = false) {
   panel.style.flexDirection = 'column';
   panel.style.zIndex = '100';
   panel.style.boxShadow = '0 4px 24px rgba(0,0,0,0.08)';
+  panel.scrollLeft = 0; // ensure no horizontal offset on open
 
 
   const frame = document.createElement('iframe');
@@ -552,6 +818,10 @@ function toggleInPagePanel(forceOpen = false) {
   } else {
     secondaryInner.appendChild(panel);
   }
+  // Always reset horizontal scroll so sidebar opens from left edge
+  secondaryInner.scrollLeft = 0;
+  panel.scrollLeft = 0;
+  state.sidebarOpen = true;
 }
 
 function attachMessageHandlers() {
@@ -563,7 +833,26 @@ function attachMessageHandlers() {
     }
 
     if (message?.type === 'toggleInPagePanel') {
-      toggleInPagePanel(false);
+      if (message.forceClose) {
+        if (layoutManager.isOpen()) {
+          layoutManager.hide();
+        } else {
+          const panelId = 'nullnote-inpage-panel';
+          const existing = document.getElementById(panelId);
+          if (existing) {
+            existing.remove();
+            hiddenNodes.forEach(node => { node.style.display = ''; });
+            hiddenNodes.clear();
+            state.sidebarOpen = false;
+          }
+        }
+      } else {
+        if (layoutManager.isOpen()) {
+          layoutManager.hide();
+        } else {
+          toggleInPagePanel(false);
+        }
+      }
     }
     if (message?.type === 'openInPagePanel') {
       toggleInPagePanel(true);
@@ -620,13 +909,23 @@ function attachPlayerMutationObserver() {
   let debounceTimer: number | null = null;
 
   const observer = new MutationObserver(() => {
-    const isFullscreen = !!document.fullscreenElement;
-    const hasButton = !!document.querySelector('.nullnote-fs-toggle-btn');
+    const isFullscreen = !!document.fullscreenElement || layoutManager.isOpen();
     const progress = findProgressContainer();
     const needsOverlay = !!(progress && !state.overlay);
 
-    // If button presence matches fullscreen state, AND we don't need timeline overlay, skip
-    if (isFullscreen === hasButton && !needsOverlay) return;
+    // Check if the button is present and correctly positioned after the settings button
+    let isButtonPositionCorrect = false;
+    if (isFullscreen) {
+      const rightControls = document.querySelector('.ytp-right-controls');
+      const settingsButton = rightControls ? findYouTubeSettingsButton(rightControls) : null;
+      const workspaceBtn = document.querySelector('.nullnote-fs-toggle-btn');
+      if (settingsButton && workspaceBtn && settingsButton.nextSibling === workspaceBtn) {
+        isButtonPositionCorrect = true;
+      }
+    }
+
+    // If fullscreen state matches the presence/correct position of our button, AND we don't need timeline overlay, skip
+    if ((isFullscreen === isButtonPositionCorrect) && !needsOverlay) return;
 
     // Debounce: wait 300ms of quiet before doing any DOM work
     if (debounceTimer !== null) window.clearTimeout(debounceTimer);
@@ -685,6 +984,23 @@ function handleSPARouting() {
       autoOpenPanelIfNeeded();
     }, 1200);
   });
+}
+
+function restoreNormalWorkspaceLayout() {
+  const wasSidebarOpen = state.sidebarOpen;
+
+  // Restore DOM hierarchy and remove fullscreen workspace
+  layoutManager.hide();
+
+  // Restore the sidepanel according to state
+  if (wasSidebarOpen) {
+    toggleInPagePanel(true);
+  } else {
+    const panelId = 'nullnote-inpage-panel';
+    if (document.getElementById(panelId)) {
+      toggleInPagePanel(false);
+    }
+  }
 }
 
 async function initialize() {
@@ -754,17 +1070,14 @@ async function initialize() {
     isOverlayOpen: () => layoutManager.isOpen(),
   });
 
-  document.addEventListener('fullscreenchange', () => {
-    attachPlayerControls();
-    const progress = findProgressContainer();
-    if (progress && !state.overlay) {
-      state.overlay = createTimelineOverlay(progress);
-      renderTimeline();
-    }
+  window.addEventListener('nullnote-workspace-opened', () => {
+    state.fullscreenWorkspaceOpen = true;
+    state.sidebarOpen = true;
   });
 
-  // Re-inject player controls after the workspace closes and restores the DOM.
   window.addEventListener('nullnote-workspace-closed', () => {
+    state.fullscreenWorkspaceOpen = false;
+    state.sidebarOpen = false;
     window.setTimeout(() => {
       attachPlayerControls();
       const progress = findProgressContainer();
@@ -773,6 +1086,20 @@ async function initialize() {
         renderTimeline();
       }
     }, 150);
+  });
+
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) {
+      if (state.fullscreenWorkspaceOpen) {
+        restoreNormalWorkspaceLayout();
+      }
+    }
+    attachPlayerControls();
+    const progress = findProgressContainer();
+    if (progress && !state.overlay) {
+      state.overlay = createTimelineOverlay(progress);
+      renderTimeline();
+    }
   });
 
   handleSPARouting();

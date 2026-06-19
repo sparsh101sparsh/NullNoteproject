@@ -1,5 +1,8 @@
-import { STORAGE_MESSAGE_TYPES } from '@/utils/constants';
-import { setAutoCaptureEnabled, getAutoCaptureEnabled, getAutoCaptureInterval, setAutoCaptureInterval } from '@/storage/repository';
+import { STORAGE_MESSAGE_TYPES, ENABLE_GOOGLE_DRIVE } from '@/utils/constants';
+import { setAutoCaptureEnabled, getAutoCaptureEnabled, getAutoCaptureInterval, setAutoCaptureInterval, getSelectedMarkerIcon } from '@/storage/repository';
+import { AuthService } from '@/services/AuthService';
+import { FolderService } from '@/services/FolderService';
+import { getDriveConnectionState, setDriveConnectionState, clearDriveConnectionState } from '@/storage/DriveStorageProvider';
 
 function sendToActiveYouTubeTab(message: any) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -54,8 +57,11 @@ function sendToAllYouTubeTabs(message: any) {
   });
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
   setAutoCaptureEnabled(false).catch(() => undefined);
+  if (details.reason === 'install' && ENABLE_GOOGLE_DRIVE) {
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/onboarding/index.html') });
+  }
 });
 
 // NOTE: chrome.action.onClicked does NOT fire when default_popup is set in the manifest.
@@ -84,8 +90,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return false;
   }
 
-  // Relay: seekVideo, manualCapture, manualMarker, update-seekbar-markers, selectedMarkerIconChanged
-  if (['seekVideo', 'manualCapture', 'manualMarker', 'update-seekbar-markers', 'selectedMarkerIconChanged'].includes(message.type)) {
+  // Relay: seekVideo, manualCapture, manualMarker, update-seekbar-markers, selectedMarkerIconChanged, toggleInPagePanel
+  if (['seekVideo', 'manualCapture', 'manualMarker', 'update-seekbar-markers', 'selectedMarkerIconChanged', 'toggleInPagePanel'].includes(message.type)) {
     sendToActiveYouTubeTab(message);
     return false;
   }
@@ -188,6 +194,81 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       await setAutoCaptureInterval(interval);
       sendToActiveYouTubeTab({ type: 'autoCaptureIntervalCommand', interval });
       respond?.({ success: true });
+    })();
+    return true;
+  }
+
+  if (message.type === 'openOptionsPage') {
+    chrome.runtime.openOptionsPage();
+    respond?.({ success: true });
+    return false;
+  }
+
+  if (message.type === 'getSelectedMarkerIcon') {
+    void (async () => {
+      const icon = await getSelectedMarkerIcon();
+      respond?.({ success: true, icon });
+    })();
+    return true;
+  }
+
+  // === GOOGLE DRIVE HANDLERS ===
+  if (message.type === STORAGE_MESSAGE_TYPES.googleDrive.getState) {
+    void (async () => {
+      const state = await getDriveConnectionState();
+      respond?.({ success: true, state });
+    })();
+    return true;
+  }
+
+  if (message.type === STORAGE_MESSAGE_TYPES.googleDrive.connect) {
+    void (async () => {
+      try {
+        const token = await AuthService.getAuthToken(true);
+        const userInfo = await AuthService.getUserInfo(token);
+        const state = await setDriveConnectionState({
+          connected: true,
+          account: {
+            id: userInfo.id,
+            email: userInfo.email,
+            name: userInfo.name,
+            picture: userInfo.picture,
+          },
+          connectedAt: Date.now(),
+          lastError: undefined,
+        });
+        respond?.({ success: true, state });
+      } catch (err: any) {
+        await setDriveConnectionState({ connected: false, lastError: err.message });
+        respond?.({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === STORAGE_MESSAGE_TYPES.googleDrive.disconnect) {
+    void (async () => {
+      try {
+        await AuthService.clearAllCachedAuthTokens();
+        await clearDriveConnectionState();
+        const state = await getDriveConnectionState();
+        respond?.({ success: true, state });
+      } catch (err: any) {
+        respond?.({ success: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === STORAGE_MESSAGE_TYPES.googleDrive.ensureRootFolder) {
+    void (async () => {
+      try {
+        const folder = await FolderService.ensureNullNoteRootFolder();
+        const state = await setDriveConnectionState({ rootFolderId: folder.id });
+        respond?.({ success: true, folder, state });
+      } catch (err: any) {
+        respond?.({ success: false, error: err.message });
+      }
     })();
     return true;
   }
