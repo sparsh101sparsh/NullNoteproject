@@ -105,5 +105,6 @@ vi.mock('@/storage/repository', () => {
     getImageOutlineEnabled: vi.fn(async () => false),
     setImageOutlineEnabled: vi.fn(async () => {}),
     getAllDocuments: vi.fn(async () => []),
+    deleteDocument: vi.fn(async () => {}),
   };
 });

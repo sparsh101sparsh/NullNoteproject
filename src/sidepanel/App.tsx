@@ -14,7 +14,8 @@ import {
   getSelectedMarkerIcon,
   setSelectedMarkerIcon as setSelectedMarkerIconInDb,
   getImageOutlineEnabled,
-  getAllDocuments
+  getAllDocuments,
+  deleteDocument
 } from '@/storage/repository';
 import { formatSeconds } from '@/utils/format';
 import { compileExportDocument } from '@/export/compiler';
@@ -1140,29 +1141,19 @@ export default function App() {
               savedNotes.map(note => {
                 const isActive = note.videoId === videoId;
                 return (
-                  <button
+                  <div
                     key={note.videoId}
-                    type="button"
-                    onClick={() => {
-                      setVideoId(note.videoId);
-                      setVideoTitle(note.videoTitle);
-                      setNotesListOpen(false);
-                    }}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: '8px',
+                      justifyContent: 'space-between',
                       width: '100%',
-                      padding: '8px 10px',
-                      borderRadius: '6px',
-                      border: 'none',
                       background: isActive ? '#fff' : 'transparent',
+                      borderRadius: '6px',
                       boxShadow: isActive ? '0 1px 3px rgba(0,0,0,0.05)' : 'none',
                       borderLeft: isActive ? '3px solid #f59e0b' : '3px solid transparent',
-                      cursor: 'pointer',
-                      textAlign: 'left',
                       transition: 'all 0.1s ease',
-                      outline: 'none'
+                      padding: 0
                     }}
                     onMouseEnter={e => {
                       if (!isActive) e.currentTarget.style.background = '#f1f5f9';
@@ -1171,29 +1162,84 @@ export default function App() {
                       if (!isActive) e.currentTarget.style.background = 'transparent';
                     }}
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: isActive ? '#f59e0b' : '#64748b', flexShrink: 0 }}>
-                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                      <polyline points="14 2 14 8 20 8" />
-                    </svg>
-                    <span style={{
-                      fontSize: '11.5px',
-                      fontWeight: isActive ? 600 : 500,
-                      color: isActive ? '#0f172a' : '#374151',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      flex: 1
-                    }}>
-                      {note.videoTitle || 'Untitled Note'}
-                    </span>
-                    <span style={{
-                      fontSize: '9.5px',
-                      color: '#94a3b8',
-                      flexShrink: 0
-                    }}>
-                      {new Date(note.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVideoId(note.videoId);
+                        setVideoTitle(note.videoTitle);
+                        setNotesListOpen(false);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        flex: 1,
+                        padding: '8px 10px',
+                        border: 'none',
+                        background: 'transparent',
+                        cursor: 'pointer',
+                        textAlign: 'left',
+                        outline: 'none',
+                        minWidth: 0
+                      }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: isActive ? '#f59e0b' : '#64748b', flexShrink: 0 }}>
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                        <polyline points="14 2 14 8 20 8" />
+                      </svg>
+                      <span style={{
+                        fontSize: '11.5px',
+                        fontWeight: isActive ? 600 : 500,
+                        color: isActive ? '#0f172a' : '#374151',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        flex: 1
+                      }}>
+                        {note.videoTitle || 'Untitled Note'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      title="Delete Note"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (confirm(`Are you sure you want to delete the note "${note.videoTitle || 'Untitled Note'}"?`)) {
+                          await deleteDocument(note.videoId);
+                          if (note.videoId === (videoIdRef.current || videoId)) {
+                            // If they delete the active note, reload a clean document
+                            const newDoc = await getDocument(note.videoId, note.videoTitle);
+                            if (editorRef.current) {
+                              editorRef.current.innerHTML = newDoc.documentContent;
+                              setIsEditorEmpty(true);
+                            }
+                          }
+                          fetchSavedNotes();
+                        }
+                      }}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: '6px 8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#ef4444',
+                        borderRadius: '4px',
+                        marginRight: '6px',
+                        opacity: 0.6,
+                        transition: 'opacity 0.15s, background-color 0.15s'
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.backgroundColor = '#fee2e2'; }}
+                      onMouseLeave={e => { e.currentTarget.style.opacity = '0.6'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="3 6 5 6 21 6"></polyline>
+                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                      </svg>
+                    </button>
+                  </div>
                 );
               })
             )}

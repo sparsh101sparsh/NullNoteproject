@@ -269,3 +269,27 @@ export async function getAllDocuments(): Promise<DocumentRecord[]> {
   return docs as DocumentRecord[];
 }
 
+export async function deleteDocument(videoId: string): Promise<void> {
+  const db = await openNullNoteDB();
+  const tx = db.transaction([DOCUMENTS_STORE, SCREENSHOTS_STORE, MARKERS_STORE], 'readwrite');
+  
+  // Delete the document record itself
+  await tx.objectStore(DOCUMENTS_STORE).delete(videoId);
+  
+  // Delete all screenshots associated with this videoId
+  const storeS = tx.objectStore(SCREENSHOTS_STORE);
+  const screenshots = await storeS.index('videoId').getAll(videoId);
+  for (const s of screenshots) {
+    await storeS.delete(s.id);
+  }
+  
+  // Delete all markers associated with this videoId
+  const storeM = tx.objectStore(MARKERS_STORE);
+  const markers = await storeM.index('videoId').getAll(videoId);
+  for (const m of markers) {
+    await storeM.delete(m.id);
+  }
+  
+  await tx.done;
+}
+
