@@ -106,5 +106,9 @@ vi.mock('@/storage/repository', () => {
     setImageOutlineEnabled: vi.fn(async () => {}),
     getAllDocuments: vi.fn(async () => []),
     deleteDocument: vi.fn(async () => {}),
+    getVisibilitySettings: vi.fn(async () => ({ showMarkers: true, showManualScreenshots: true, showAutoScreenshots: true })),
+    setVisibilitySetting: vi.fn(async () => {}),
+    getOnboardingCompleted: vi.fn(async () => true),
+    setOnboardingCompleted: vi.fn(async () => {}),
   };
 });

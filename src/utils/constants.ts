@@ -17,6 +17,8 @@ export const SETTINGS_AUTOSNAP_ON_OPEN = 'autosnapOnOpen';
 export const SETTINGS_SELECTED_MARKER_ICON = 'selectedMarkerIcon';
 export const SETTINGS_IMAGE_OUTLINE = 'imageOutlineEnabled';
 export const SETTINGS_GOOGLE_DRIVE_STATE = 'googleDriveState';
+export const SETTINGS_ONBOARDING_COMPLETED = 'onboardingCompleted';
+export const SETTINGS_ONBOARDING_DISMISSED = 'onboardingDismissed';
 
 export const DEFAULT_CAPTURE_INTERVAL = 30;
 export const DEFAULT_MARKER_ICON = 'MarkIcon1';

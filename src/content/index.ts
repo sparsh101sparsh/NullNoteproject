@@ -14,11 +14,22 @@ interface PageState {
   highlights: NotebookEntry[];
   autoCaptureEnabled: boolean;
   autoCaptureInterval: number;
+  /** Monotonically-increasing session counter. Every tick checks its own session against
+   * this value — if they differ the tick was spawned by a stale loop and self-terminates.
+   * This is the single mechanism that prevents zombie parallel loops after rapid toggles
+   * or async restarts. */
+  autoCaptureSessionId: number;
   captureTimer?: number;
   lastAutoCaptureTimestamp: number;
   selectedMarkerIcon: string;
   sidebarOpen: boolean;
   fullscreenWorkspaceOpen: boolean;
+  captureInFlight: boolean;
+  autoRemainingMs: number;
+  autoLastWallClockMs: number;
+  autoLastVideoTime: number | null;
+  lastManualCaptureTimestamp: number;
+  lastMarkerTimestamp: number;
 }
 
 const state: PageState = {
@@ -28,15 +39,25 @@ const state: PageState = {
   highlights: [],
   autoCaptureEnabled: false,
   autoCaptureInterval: 30,
-  lastAutoCaptureTimestamp: 0,
+  autoCaptureSessionId: 0,
+  lastAutoCaptureTimestamp: -1,
   selectedMarkerIcon: DEFAULT_MARKER_ICON,
   sidebarOpen: false,
   fullscreenWorkspaceOpen: false,
+  captureInFlight: false,
+  autoRemainingMs: 30_000,
+  autoLastWallClockMs: 0,
+  autoLastVideoTime: null,
+  lastManualCaptureTimestamp: -1,
+  lastMarkerTimestamp: -1,
 };
 
 // Singleton managers — created once per content script lifecycle
 const fullscreenManager = new FullscreenManager();
 const layoutManager = new LayoutManager();
+const FRAME_CAPTURE_TIMEOUT_MS = 5000;
+const AUTO_CAPTURE_TICK_MS = 500;
+const AUTO_CAPTURE_SEEK_THRESHOLD_SECONDS = 2;
 
 function getVideoIdFromUrl(url: string) {
   try {
@@ -53,6 +74,61 @@ function isYouTubeShorts(): boolean {
 
 function isWatchPage(): boolean {
   return window.location.pathname === '/watch' && !!new URL(window.location.href).searchParams.get('v');
+}
+
+function isFrameCaptureReady(video: HTMLVideoElement | null): video is HTMLVideoElement {
+  return Boolean(
+    video &&
+    video.isConnected &&
+    video.readyState >= 2 &&
+    video.videoWidth > 0 &&
+    video.videoHeight > 0
+  );
+}
+
+function getVideoVisibleArea(video: HTMLVideoElement): number {
+  const rect = video.getBoundingClientRect();
+  const width = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+  const height = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+  return width * height;
+}
+
+function scoreVideoElement(video: HTMLVideoElement): number {
+  let score = getVideoVisibleArea(video) * 10;
+  if (!video.paused && !video.ended) score += 50_000_000;
+  if (video.readyState >= 2) score += 5_000_000;
+  if (video.videoWidth > 0 && video.videoHeight > 0) score += Math.min(video.videoWidth * video.videoHeight, 5_000_000);
+  if (video.classList.contains('html5-main-video')) score += 1_000_000;
+  return score;
+}
+
+function getCurrentVideoElement(): HTMLVideoElement | null {
+  const candidates = Array.from(document.querySelectorAll<HTMLVideoElement>('video'))
+    .filter(video => video.isConnected)
+    .sort((a, b) => scoreVideoElement(b) - scoreVideoElement(a));
+
+  const nextVideo = candidates[0] ?? null;
+  state.video = nextVideo;
+  return nextVideo;
+}
+
+function isYouTubeAdShowing(): boolean {
+  const player = document.getElementById('movie_player');
+  return Boolean(player?.classList.contains('ad-showing') || document.querySelector('.ad-showing'));
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: number | undefined;
+  return new Promise<T>((resolve, reject) => {
+    timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(resolve, reject).finally(() => {
+      if (timer !== undefined) window.clearTimeout(timer);
+    });
+  });
+}
+
+function emitAutoDebug(event: 'skipped' | 'capturing' | 'captured' | 'error', detail?: Record<string, unknown>) {
+  console.debug('[NullNote] AutoSnap', event, detail ?? {});
 }
 
 function autoOpenPanelIfNeeded() {
@@ -90,8 +166,8 @@ function autoOpenPanelIfNeeded() {
   tryOpen();
 }
 
-function getVideoMetadata() {
-  const video = state.video;
+function getVideoMetadata(videoOverride?: HTMLVideoElement | null) {
+  const video = videoOverride ?? getCurrentVideoElement();
   return {
     videoId: state.videoId,
     videoUrl: window.location.href,
@@ -109,37 +185,46 @@ function sendToBus(message: any) {
   });
 }
 
-// Open panel if not open, then send message after iframe has time to load
-function ensurePanelOpenAndSend(message: any) {
+/**
+ * Deliver `message` to the sidepanel reliably.
+ * Opens the panel if not already open, then sends the message via the background bus.
+ * The background now correctly relays insert-* messages to all extension pages.
+ * An optional shouldSend guard is checked immediately before sending.
+ */
+function ensurePanelOpenAndSend(message: any, shouldSend: () => boolean = () => true) {
   const panel = document.getElementById('nullnote-inpage-panel');
   if (!panel) {
-    // Open the panel
+    // Panel just opened — give React a brief moment to mount its message listener.
+    // 600ms is generous; the iframe typically loads in ~200-400ms.
     toggleInPagePanel(true);
-    // Wait for iframe to load before sending
     setTimeout(() => {
-      sendToBus(message);
-    }, 800);
+      if (shouldSend()) sendToBus(message);
+    }, 600);
   } else {
-    // Panel already open, send directly
-    sendToBus(message);
+    if (shouldSend()) sendToBus(message);
   }
 }
 
 async function addQuickHighlight() {
-  const meta = getVideoMetadata();
-  if (meta.timestamp === state.lastAutoCaptureTimestamp) {
+  const video = getCurrentVideoElement();
+  const meta = getVideoMetadata(video);
+  if (meta.timestamp === state.lastMarkerTimestamp) {
     console.log('[NullNote] Marker/Screenshot already captured at timestamp:', meta.timestamp, '— skipping duplicate');
     return;
   }
-  state.lastAutoCaptureTimestamp = meta.timestamp;
+  state.lastMarkerTimestamp = meta.timestamp;
 
   console.log('[NullNote] Marker triggered — timestamp:', meta.timestamp);
 
   // Capture a frame from the video at this exact moment to embed in the marker
   let imageData: string | undefined;
-  if (state.video) {
+  if (isFrameCaptureReady(video)) {
     try {
-      imageData = await captureVideoFrame(state.video);
+      imageData = await withTimeout(
+        captureVideoFrame(video),
+        FRAME_CAPTURE_TIMEOUT_MS,
+        'Marker frame capture timed out.'
+      );
       console.log('[NullNote] Marker frame captured');
     } catch {
       // Screenshot failed — marker will still be created without image
@@ -164,14 +249,16 @@ async function sendAutoCaptureMessage(enabled: boolean) {
 async function toggleAutoCapture() {
   state.autoCaptureEnabled = !state.autoCaptureEnabled;
   console.log('[NullNote] AutoSnap toggled:', state.autoCaptureEnabled);
+  // Notify background to persist the new state and relay autoCaptureCommand to all tabs.
+  // The background will broadcast autoCaptureCommand back to this content script, which
+  // will then start/stop the loop via the message handler.
+  // DO NOT call startAutoCaptureLoop/stopAutoCaptureLoop here — doing so races with the
+  // incoming broadcast and causes duplicate parallel loops.
   sendAutoCaptureMessage(state.autoCaptureEnabled);
-  if (state.autoCaptureEnabled) {
-    startAutoCaptureLoop();
-  } else {
+  // Eagerly stop immediately to prevent extra captures while waiting for the roundtrip.
+  if (!state.autoCaptureEnabled) {
     stopAutoCaptureLoop();
   }
-  // Sync the AutoSnap status to sidebar React app
-  chrome.runtime.sendMessage({ type: 'autoCaptureCommand', enabled: state.autoCaptureEnabled });
 }
 
 function findYouTubeSettingsButton(rightControls: Element): Element | null {
@@ -633,38 +720,53 @@ function playShutterSound() {
   }
 }
 
-async function captureScreenshotForVideo(source: 'manual' | 'auto' = 'manual') {
-  const video = state.video;
+async function captureScreenshotForVideo(source: 'manual' | 'auto' = 'manual', videoOverride?: HTMLVideoElement): Promise<boolean> {
+  const video = videoOverride?.isConnected ? videoOverride : getCurrentVideoElement();
   if (!video) {
     console.warn('[NullNote] Screenshot failed: no video element found');
-    return;
+    return false;
   }
 
-  const { timestamp } = getVideoMetadata();
-  if (timestamp === state.lastAutoCaptureTimestamp) {
+  const { timestamp } = getVideoMetadata(video);
+  if (source === 'manual' && timestamp === state.lastManualCaptureTimestamp) {
     console.log('[NullNote] Screenshot already captured at timestamp:', timestamp, '— skipping duplicate');
-    return;
+    return false;
+  }
+
+  if (source === 'auto' && !state.autoCaptureEnabled) {
+    return false;
   }
 
   console.log('[NullNote] Screenshot triggered — timestamp:', timestamp);
 
   let imageData = '';
   try {
-    imageData = await captureVideoFrame(video);
+    if (!isFrameCaptureReady(video)) {
+      throw new Error('Video frame is not ready for capture.');
+    }
+    imageData = await withTimeout(
+      captureVideoFrame(video),
+      FRAME_CAPTURE_TIMEOUT_MS,
+      'Video frame capture timed out.'
+    );
   } catch {
-    imageData = await captureVisibleTabFallback();
+    if (source === 'manual') {
+      imageData = await captureVisibleTabFallback();
+    }
   }
 
   if (!imageData) {
     console.error('[NullNote] Screenshot failed: could not capture frame');
-    return;
+    return false;
+  }
+
+  if (source === 'auto' && !state.autoCaptureEnabled) {
+    return false;
   }
 
   if (source === 'manual') {
     playShutterSound();
   }
-
-  state.lastAutoCaptureTimestamp = timestamp;
 
   const message = {
     type: 'insert-screenshot',
@@ -673,14 +775,20 @@ async function captureScreenshotForVideo(source: 'manual' | 'auto' = 'manual') {
     source,
   };
 
+  if (source === 'auto') {
+    state.lastAutoCaptureTimestamp = timestamp;
+  } else {
+    state.lastManualCaptureTimestamp = timestamp;
+  }
+
   if (source === 'manual') {
     ensurePanelOpenAndSend(message);
   } else {
-    // AutoSnap: panel must already be open, just send
-    sendToBus(message);
+    ensurePanelOpenAndSend(message, () => state.autoCaptureEnabled);
   }
 
   console.log('[NullNote] Screenshot message sent');
+  return true;
 }
 
 async function captureVisibleTabFallback() {
@@ -691,30 +799,217 @@ async function captureVisibleTabFallback() {
   });
 }
 
+function getAutoCaptureIntervalMs() {
+  return Math.max(5, state.autoCaptureInterval) * 1000;
+}
+
+function getVideoCurrentTime(video: HTMLVideoElement | null): number | null {
+  if (!video || !Number.isFinite(video.currentTime)) return null;
+  return video.currentTime;
+}
+
+function resetAutoCaptureClock(reason: string, video: HTMLVideoElement | null = getCurrentVideoElement()) {
+  state.autoRemainingMs = getAutoCaptureIntervalMs();
+  state.autoLastWallClockMs = performance.now();
+  state.autoLastVideoTime = getVideoCurrentTime(video);
+  emitAutoDebug('skipped', {
+    reason,
+    remainingMs: Math.round(state.autoRemainingMs),
+    videoTime: state.autoLastVideoTime,
+  });
+}
+
+function scheduleAutoCaptureTick(sessionId: number, delayMs = AUTO_CAPTURE_TICK_MS) {
+  // If the session has advanced since this tick chain was born, do nothing.
+  if (sessionId !== state.autoCaptureSessionId) return;
+  if (!state.autoCaptureEnabled) return;
+  if (state.captureTimer) window.clearTimeout(state.captureTimer);
+  state.captureTimer = window.setTimeout(() => {
+    state.captureTimer = undefined;
+    void runAutoCaptureTick(sessionId);
+  }, delayMs);
+}
+
+function detectAutoCaptureSeek(video: HTMLVideoElement, now: number) {
+  const currentVideoTime = getVideoCurrentTime(video);
+  if (currentVideoTime === null || state.autoLastVideoTime === null || state.autoLastWallClockMs <= 0) {
+    state.autoLastVideoTime = currentVideoTime;
+    state.autoLastWallClockMs = now;
+    return false;
+  }
+
+  const elapsedWallSeconds = Math.max(0, (now - state.autoLastWallClockMs) / 1000);
+  const expectedVideoDelta = video.paused ? 0 : elapsedWallSeconds * Math.max(0, video.playbackRate || 1);
+  const actualVideoDelta = currentVideoTime - state.autoLastVideoTime;
+  const unexpectedDelta = actualVideoDelta - expectedVideoDelta;
+  const seekDetected = Math.abs(unexpectedDelta) >= AUTO_CAPTURE_SEEK_THRESHOLD_SECONDS;
+
+  state.autoLastVideoTime = currentVideoTime;
+  state.autoLastWallClockMs = now;
+
+  if (seekDetected) {
+    resetAutoCaptureClock(unexpectedDelta > 0 ? 'forward-seek' : 'backward-seek', video);
+  }
+
+  return seekDetected;
+}
+
+async function runAutoCaptureTick(sessionId: number) {
+  // Stale loop check — if the session has advanced this chain must self-terminate.
+  if (sessionId !== state.autoCaptureSessionId) return;
+
+  if (!state.autoCaptureEnabled) {
+    emitAutoDebug('skipped', { reason: 'disabled', sessionId });
+    return;
+  }
+
+  if (state.captureInFlight) {
+    emitAutoDebug('skipped', { reason: 'capture-in-progress' });
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  const now = performance.now();
+  const previousWallClockMs = state.autoLastWallClockMs > 0 ? state.autoLastWallClockMs : now;
+
+  if (!isWatchPage() || isYouTubeShorts()) {
+    emitAutoDebug('skipped', { reason: 'not-watch-page' });
+    state.autoLastWallClockMs = now;
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  if (isYouTubeAdShowing()) {
+    emitAutoDebug('skipped', { reason: 'ad-showing' });
+    state.autoLastWallClockMs = now;
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  const video = getCurrentVideoElement();
+  if (!video) {
+    emitAutoDebug('skipped', { reason: 'no-video' });
+    state.autoLastWallClockMs = now;
+    state.autoLastVideoTime = null;
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  if (detectAutoCaptureSeek(video, now)) {
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  if (video.paused) {
+    emitAutoDebug('skipped', { reason: 'paused' });
+    state.autoLastWallClockMs = now;
+    state.autoLastVideoTime = getVideoCurrentTime(video);
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  if (video.ended) {
+    emitAutoDebug('skipped', { reason: 'ended' });
+    state.autoLastWallClockMs = now;
+    state.autoLastVideoTime = getVideoCurrentTime(video);
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  if (!isFrameCaptureReady(video)) {
+    emitAutoDebug('skipped', { reason: 'frame-not-ready' });
+    state.autoLastWallClockMs = now;
+    state.autoLastVideoTime = getVideoCurrentTime(video);
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  const currentTime = Math.round(video.currentTime);
+  if (!Number.isFinite(currentTime) || currentTime < 0) {
+    emitAutoDebug('skipped', { reason: 'invalid-timestamp', timestamp: currentTime });
+    state.autoLastWallClockMs = now;
+    state.autoLastVideoTime = getVideoCurrentTime(video);
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  const elapsedPlaybackMs = Math.max(0, now - previousWallClockMs);
+  state.autoRemainingMs = Math.min(
+    getAutoCaptureIntervalMs(),
+    Math.max(0, state.autoRemainingMs - elapsedPlaybackMs)
+  );
+
+  if (currentTime === state.lastAutoCaptureTimestamp) {
+    emitAutoDebug('skipped', { reason: 'duplicate-timestamp', timestamp: currentTime });
+    resetAutoCaptureClock('duplicate-timestamp', video);
+    scheduleAutoCaptureTick(sessionId);
+    return;
+  }
+
+  if (state.autoRemainingMs > 0) {
+    emitAutoDebug('skipped', {
+      reason: 'countdown',
+      remainingMs: Math.round(state.autoRemainingMs),
+      timestamp: currentTime,
+    });
+    scheduleAutoCaptureTick(sessionId, Math.min(AUTO_CAPTURE_TICK_MS, state.autoRemainingMs));
+    return;
+  }
+
+  state.captureInFlight = true;
+  try {
+    emitAutoDebug('capturing', { timestamp: currentTime, sessionId });
+    const captured = await captureScreenshotForVideo('auto', video);
+    if (captured) {
+      emitAutoDebug('captured', { timestamp: currentTime, sessionId });
+      resetAutoCaptureClock('captured', video);
+    } else {
+      emitAutoDebug('skipped', { reason: 'capture-failed', timestamp: currentTime });
+      resetAutoCaptureClock('capture-failed', video);
+    }
+  } catch (error) {
+    emitAutoDebug('error', {
+      reason: 'capture-threw',
+      error: error instanceof Error ? error.message : String(error),
+    });
+    resetAutoCaptureClock('capture-threw', video);
+  } finally {
+    state.captureInFlight = false;
+    // Only reschedule if this session is still the active one.
+    scheduleAutoCaptureTick(sessionId);
+  }
+}
+
 function startAutoCaptureLoop() {
-  stopAutoCaptureLoop(); // Always clear before starting — prevents duplicate intervals
-  const intervalMs = Math.max(5, state.autoCaptureInterval) * 1000;
-  console.log('[NullNote] AutoSnap loop started, interval:', intervalMs, 'ms');
-  state.captureTimer = window.setInterval(async () => {
-    const video = state.video;
-    if (!video || video.paused || video.ended) {
-      return; // Only capture while playing
-    }
-    const currentTime = Math.round(video.currentTime);
-    if (currentTime === state.lastAutoCaptureTimestamp) {
-      return; // Deduplicate same-second captures
-    }
-    state.lastAutoCaptureTimestamp = currentTime;
-    await captureScreenshotForVideo('auto');
-  }, intervalMs);
+  // Increment session ID — this atomically invalidates ALL prior tick chains,
+  // including any currently in-flight async captures whose finally blocks
+  // would otherwise spawn a new rogue loop.
+  const sessionId = ++state.autoCaptureSessionId;
+  // Clear any pending timer (belt-and-suspenders alongside session ID).
+  if (state.captureTimer) {
+    window.clearTimeout(state.captureTimer);
+    state.captureTimer = undefined;
+  }
+  state.captureInFlight = false;
+  const intervalMs = getAutoCaptureIntervalMs();
+  resetAutoCaptureClock('started');
+  console.log('[NullNote] AutoSnap loop started, sessionId:', sessionId, 'interval:', intervalMs, 'ms');
+  scheduleAutoCaptureTick(sessionId);
 }
 
 function stopAutoCaptureLoop() {
+  // Increment session ID to invalidate any in-flight tick chain, even if
+  // captureInFlight is true and the finally hasn't run yet.
+  state.autoCaptureSessionId++;
   if (state.captureTimer) {
-    window.clearInterval(state.captureTimer);
+    window.clearTimeout(state.captureTimer);
     state.captureTimer = undefined;
-    console.log('[NullNote] AutoSnap loop stopped');
+    console.log('[NullNote] AutoSnap loop stopped, sessionId now:', state.autoCaptureSessionId);
   }
+  state.captureInFlight = false;
+  state.autoRemainingMs = getAutoCaptureIntervalMs();
+  state.autoLastWallClockMs = 0;
+  state.autoLastVideoTime = null;
 }
 
 function renderTimeline() {
@@ -874,7 +1169,10 @@ function attachMessageHandlers() {
     if (message?.type === 'autoCaptureCommand') {
       state.autoCaptureEnabled = Boolean(message.enabled);
       if (state.autoCaptureEnabled) {
-        startAutoCaptureLoop();
+        // Only start loop on eligible pages — avoids spinning on Shorts or non-watch pages
+        if (isWatchPage() && !isYouTubeShorts()) {
+          startAutoCaptureLoop();
+        }
       } else {
         stopAutoCaptureLoop();
       }
@@ -882,7 +1180,7 @@ function attachMessageHandlers() {
     if (message?.type === 'autoCaptureIntervalCommand') {
       state.autoCaptureInterval = Number(message.interval) || state.autoCaptureInterval;
       if (state.autoCaptureEnabled) {
-        startAutoCaptureLoop(); // Restart with new interval
+        startAutoCaptureLoop(); // Restart with new interval — session ID increments, old chain terminates
       }
     }
     if (message?.type === 'seekVideo' && state.video) {
@@ -898,6 +1196,23 @@ function attachMessageHandlers() {
     }
     if (message?.type === 'selectedMarkerIconChanged') {
       state.selectedMarkerIcon = message.icon || DEFAULT_MARKER_ICON;
+    }
+    if (message?.type === 'restorePlayerFocus') {
+      setTimeout(() => {
+        try {
+          const player = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+          const video = document.querySelector('.html5-main-video') || document.querySelector('video');
+
+          if (video && typeof (video as any).focus === 'function') {
+            (video as HTMLElement).focus({ preventScroll: true });
+          }
+          if (player && typeof (player as any).focus === 'function') {
+            (player as HTMLElement).focus({ preventScroll: true });
+          }
+        } catch (e) {
+          console.error('[NullNote] Failed to restore player focus:', e);
+        }
+      }, 80);
     }
   });
 }
@@ -958,23 +1273,50 @@ function handleSPARouting() {
     if (newVideoId && newVideoId !== state.videoId) {
       state.videoId = newVideoId;
       state.highlights = [];
-      state.lastAutoCaptureTimestamp = 0;
+      state.lastAutoCaptureTimestamp = -1;
+      state.lastManualCaptureTimestamp = -1;
+      state.lastMarkerTimestamp = -1;
 
       // Revalidate video reference — don't use stale DOM node
-      const nextVideo = document.querySelector('video');
-      if (nextVideo) state.video = nextVideo as HTMLVideoElement;
+      state.video = getCurrentVideoElement();
+
+      // REQUIREMENT: AutoSnap must stop when navigating to another video.
+      // The user must explicitly re-enable it for the new video.
+      if (state.autoCaptureEnabled) {
+        console.log('[NullNote] SPA navigation — stopping AutoSnap for new video:', newVideoId);
+        state.autoCaptureEnabled = false;
+        stopAutoCaptureLoop();
+        // Notify background to persist the disabled state and update the sidepanel UI.
+        sendAutoCaptureMessage(false);
+      }
 
       renderTimeline();
 
-      const newTitle = document.title.replace(' - YouTube', '').trim();
-      chrome.runtime.sendMessage({
-        type: 'video-changed',
-        videoId: state.videoId,
-        videoTitle: newTitle,
-        videoUrl: window.location.href,
-        source: 'content',
-      }).catch(() => { });
-      console.log('[NullNote] Video changed:', state.videoId, newTitle);
+      // YouTube updates document.title asynchronously after yt-navigate-finish.
+      // Poll briefly until the title actually changes, then send.
+      const oldTitle = document.title;
+      let pollCount = 0;
+      const maxPolls = 15; // 15 × 200ms = 3s max wait
+      const pollTitle = () => {
+        pollCount++;
+        const titleChanged = document.title !== oldTitle;
+
+        if (titleChanged || pollCount >= maxPolls) {
+          const finalTitle = document.title.replace(' - YouTube', '').trim();
+          chrome.runtime.sendMessage({
+            type: 'video-changed',
+            videoId: state.videoId,
+            videoTitle: finalTitle,
+            videoUrl: window.location.href,
+            source: 'content',
+          }).catch(() => { });
+          console.log('[NullNote] Video changed:', state.videoId, finalTitle);
+        } else {
+          setTimeout(pollTitle, 200);
+        }
+      };
+      // Start polling after a small initial delay
+      setTimeout(pollTitle, 200);
     }
     // Re-inject player controls and action button after SPA navigation
     setTimeout(() => {

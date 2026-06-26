@@ -1,5 +1,4 @@
 import { useEffect } from 'react';
-import { STORAGE_MESSAGE_TYPES } from '@/utils/constants';
 import Logo from '@/components/Logo';
 
 export default function PopupApp() {
@@ -8,62 +7,50 @@ export default function PopupApp() {
     document.body.classList.add('light');
   }, []);
 
-  const openNullNote = () => {
-    chrome.runtime.sendMessage({ type: STORAGE_MESSAGE_TYPES.openSidePanel }, () => {
-      if (chrome.runtime.lastError) { /* ignore */ }
-    });
-    window.close();
-  };
-
   const openSettings = () => {
     try {
       if (chrome.runtime.openOptionsPage) {
         chrome.runtime.openOptionsPage();
       } else {
-        chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+        window.open(chrome.runtime.getURL('src/settings/index.html'));
       }
     } catch (e) {
-      chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+      window.open(chrome.runtime.getURL('src/settings/index.html'));
     }
   };
 
   return (
-    <main className="w-[320px] bg-slate-50 p-4 text-slate-900 antialiased select-none">
-      <div className="flex flex-col gap-4">
-        {/* Top Branding Card */}
-        <section className="flex items-center gap-3.5 rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm">
-          <Logo size={44} />
-          <div className="flex flex-col">
-            <h1 className="text-base font-bold tracking-tight text-slate-900">
-              NullNote
-            </h1>
-            <p className="text-[11px] font-medium text-slate-500 mt-0.5">
-              Capture. Annotate. Remember.
-            </p>
-          </div>
-        </section>
+    <main className="w-[320px] min-h-[200px] bg-gradient-to-br from-slate-900 via-slate-800 to-brand-700 p-6 text-white antialiased select-none relative overflow-hidden">
+      {/* Decorative background effects */}
+      <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0">
+        <div className="absolute -top-24 -right-24 w-48 h-48 bg-brand-500 rounded-full mix-blend-multiply filter blur-3xl opacity-40 animate-blob"></div>
+        <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-brand-700 rounded-full mix-blend-multiply filter blur-3xl opacity-40 animate-blob animation-delay-2000"></div>
+      </div>
 
-        {/* Compact Actions Layout */}
-        <div className="flex flex-col gap-2.5">
-          {/* Primary Action: Open NullNote */}
-          <button
-            type="button"
-            onClick={openNullNote}
-            className="group relative flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 px-4 py-3 text-sm font-semibold text-slate-950 transition-all duration-200 active:scale-[0.98] shadow-[0_4px_12px_rgba(245,158,11,0.12)] hover:shadow-[0_6px_16px_rgba(245,158,11,0.2)]"
-          >
-            <span className="text-base transition-transform group-hover:scale-110 duration-200">📒</span>
-            <span>Open NullNote</span>
-          </button>
+      {/* Settings Button - Top Right */}
+      <button
+        type="button"
+        onClick={openSettings}
+        className="absolute top-4 right-4 z-50 flex items-center justify-center w-8 h-8 rounded-full bg-white/5 hover:bg-white/20 transition-all duration-300 active:scale-[0.95] backdrop-blur-md border border-white/10 text-white/80 hover:text-white cursor-pointer shadow-lg"
+        title="Settings"
+      >
+        <span className="text-sm">⚙</span>
+      </button>
 
-          {/* Secondary Action: Settings */}
-          <button
-            type="button"
-            onClick={openSettings}
-            className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition-all duration-200 hover:bg-slate-50 hover:border-slate-300 hover:text-slate-900 active:scale-[0.98]"
-          >
-            <span className="text-base">⚙</span>
-            <span>Settings</span>
-          </button>
+      {/* Centered Logo and Branding */}
+      <div className="flex flex-col items-center justify-center gap-5 h-full pt-3 relative z-10">
+        <div className="relative group">
+          <div className="absolute inset-0 bg-brand-500 blur-lg opacity-30 rounded-[22%] group-hover:opacity-50 transition-opacity duration-500"></div>
+          <Logo size={72} className="relative z-10 shadow-2xl ring-1 ring-white/10 rounded-[22%] transition-transform duration-500 hover:scale-105" />
+        </div>
+        
+        <div className="flex flex-col items-center text-center">
+          <h1 className="text-2xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white to-white/70 drop-shadow-sm">
+            NullNote
+          </h1>
+          <p className="text-[11px] font-semibold text-brand-100/70 mt-1.5 tracking-widest uppercase letter-spacing-2">
+            Snap It. Mark It. Keep It.
+          </p>
         </div>
       </div>
     </main>

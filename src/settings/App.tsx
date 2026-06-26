@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Camera, Cloud, Keyboard, Download, Palette, Database, Info } from 'lucide-react';
+import { Camera, Cloud, Keyboard, Download, Palette, Database, Info, RotateCcw } from 'lucide-react';
 import {
   getAutoCaptureInterval, setAutoCaptureInterval,
   getAutosnapOnOpen, setAutosnapOnOpen,
@@ -8,6 +8,7 @@ import {
   getIncludeScreenshots, setIncludeScreenshots,
   getImageOutlineEnabled, setImageOutlineEnabled,
   getStorageStats, clearAllData, exportAllDataAsJson,
+  setOnboardingCompleted,
 } from '@/storage/repository';
 import { STORAGE_MESSAGE_TYPES, ENABLE_GOOGLE_DRIVE } from '@/utils/constants';
 
@@ -252,6 +253,11 @@ export default function SettingsApp() {
         setDriveError(res?.error || 'Failed to disconnect.');
       }
     });
+  };
+
+  const handleRestartOnboarding = async () => {
+    await setOnboardingCompleted(false);
+    showToast();
   };
 
   // ─── RENDER ──────────────────────────────────────────────────────────────
@@ -567,6 +573,17 @@ export default function SettingsApp() {
               className="flex items-center gap-2 rounded-lg border border-[#1E3A5F] bg-[#112745] px-4 py-2 text-[13px] font-medium text-slate-300 hover:bg-[#1A365D] hover:border-[#2C5282] hover:text-white transition shadow-sm"
             >
               Report a Bug
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3 pt-4 border-t border-[#1E3A5F]">
+            <button
+              type="button"
+              onClick={handleRestartOnboarding}
+              className="flex items-center gap-2 rounded-lg border border-[#1E3A5F] bg-[#112745] px-4 py-2 text-[13px] font-medium text-slate-300 hover:bg-[#1A365D] hover:border-[#2C5282] hover:text-white transition shadow-sm"
+            >
+              <RotateCcw className="w-4 h-4" />
+              Restart Onboarding Tour
             </button>
           </div>
         </SettingsCard>

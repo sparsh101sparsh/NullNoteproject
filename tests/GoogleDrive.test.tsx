@@ -16,6 +16,8 @@ vi.mock('@/storage/repository', () => ({
   getIncludeScreenshots: vi.fn().mockResolvedValue(true),
   getImageOutlineEnabled: vi.fn().mockResolvedValue(true),
   getStorageStats: vi.fn().mockResolvedValue({ documents: 0, screenshots: 0, markers: 0 }),
+  getOnboardingCompleted: vi.fn().mockResolvedValue(true),
+  setOnboardingCompleted: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock('@/utils/constants', async (importOriginal) => {

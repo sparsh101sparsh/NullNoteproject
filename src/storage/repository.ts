@@ -1,5 +1,5 @@
 import { openNullNoteDB } from './db';
-import { DOCUMENTS_STORE, SCREENSHOTS_STORE, MARKERS_STORE, SETTINGS_STORE, AUTO_CAPTURE_KEY, AUTO_CAPTURE_INTERVAL_KEY, DEFAULT_CAPTURE_INTERVAL, SETTINGS_DEFAULT_EXPORT_FORMAT, SETTINGS_INCLUDE_TIMESTAMPS, SETTINGS_INCLUDE_SCREENSHOTS, SETTINGS_AUTOSNAP_ON_OPEN, SETTINGS_SELECTED_MARKER_ICON, DEFAULT_MARKER_ICON, SETTINGS_IMAGE_OUTLINE } from '@/utils/constants';
+import { DOCUMENTS_STORE, SCREENSHOTS_STORE, MARKERS_STORE, SETTINGS_STORE, AUTO_CAPTURE_KEY, AUTO_CAPTURE_INTERVAL_KEY, DEFAULT_CAPTURE_INTERVAL, SETTINGS_DEFAULT_EXPORT_FORMAT, SETTINGS_INCLUDE_TIMESTAMPS, SETTINGS_INCLUDE_SCREENSHOTS, SETTINGS_AUTOSNAP_ON_OPEN, SETTINGS_SELECTED_MARKER_ICON, DEFAULT_MARKER_ICON, SETTINGS_IMAGE_OUTLINE, SETTINGS_ONBOARDING_COMPLETED, SETTINGS_ONBOARDING_DISMISSED } from '@/utils/constants';
 
 
 export interface DocumentRecord {
@@ -291,5 +291,36 @@ export async function deleteDocument(videoId: string): Promise<void> {
   }
   
   await tx.done;
+}
+
+export async function getVisibilitySettings(): Promise<{ showMarkers: boolean; showManualScreenshots: boolean; showAutoScreenshots: boolean }> {
+  const [showMarkers, showManualScreenshots, showAutoScreenshots] = await Promise.all([
+    getSetting<boolean>('showMarkers', true),
+    getSetting<boolean>('showManualScreenshots', true),
+    getSetting<boolean>('showAutoScreenshots', true)
+  ]);
+  return { showMarkers, showManualScreenshots, showAutoScreenshots };
+}
+
+export async function setVisibilitySetting(key: 'showMarkers' | 'showManualScreenshots' | 'showAutoScreenshots', value: boolean): Promise<void> {
+  return setSetting(key, value);
+}
+
+// ─── ONBOARDING ───────────────────────────────────────────────────────────────
+
+export async function getOnboardingCompleted(): Promise<boolean> {
+  return getSetting<boolean>(SETTINGS_ONBOARDING_COMPLETED, false);
+}
+
+export async function setOnboardingCompleted(completed: boolean): Promise<void> {
+  return setSetting(SETTINGS_ONBOARDING_COMPLETED, completed);
+}
+
+export async function getOnboardingDismissed(): Promise<boolean> {
+  return getSetting<boolean>(SETTINGS_ONBOARDING_DISMISSED, false);
+}
+
+export async function setOnboardingDismissed(dismissed: boolean): Promise<void> {
+  return setSetting(SETTINGS_ONBOARDING_DISMISSED, dismissed);
 }
 

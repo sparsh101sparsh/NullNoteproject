@@ -8,22 +8,40 @@ import {
   saveMarkerRecord,
   pruneOrphanedRecords,
   getAutoCaptureEnabled,
-  setAutoCaptureEnabled,
   getAutoCaptureInterval,
-  setAutoCaptureInterval,
   getSelectedMarkerIcon,
   setSelectedMarkerIcon as setSelectedMarkerIconInDb,
   getImageOutlineEnabled,
   getAllDocuments,
-  deleteDocument
+  deleteDocument,
+  getVisibilitySettings,
+  setVisibilitySetting,
+  getOnboardingCompleted,
+  setOnboardingCompleted
 } from '@/storage/repository';
 import { formatSeconds } from '@/utils/format';
 import { compileExportDocument } from '@/export/compiler';
 import { layoutDocument } from '@/export/layout';
 import { renderPdf } from '@/export/pdf-renderer';
 import { renderDocx } from '@/export/docx-renderer';
-import { MARKER_ICONS, DEFAULT_MARKER_ICON } from '@/utils/constants';
+import { MARKER_ICONS, DEFAULT_MARKER_ICON, STORAGE_MESSAGE_TYPES } from '@/utils/constants';
 import Logo from '@/components/Logo';
+import Tour from '@/components/Tour';
+import { TOUR_STEPS } from '@/utils/tourSteps';
+
+export interface KnowledgeItem {
+  id: string; // matches data-element-id
+  documentId: string;
+  videoId: string;
+  videoTitle?: string;
+  timestamp: number; // seconds
+  type: 'marker' | 'screenshot';
+  source?: 'manual' | 'auto';
+  createdAt?: number;
+  updatedAt?: number;
+  searchText?: string;
+  isDeleted?: boolean;
+}
 
 // Map marker icon keys to their corresponding border colors
 function getMarkerColor(iconKey?: string): string {
@@ -103,6 +121,7 @@ function MarkerIconPicker({ selected, onChange, iconUrl, isSegmented }: MarkerIc
       </button>
       {open && (
         <div
+          className="popup-dropdown"
           style={{
             position: 'absolute',
             right: 0,
@@ -117,6 +136,7 @@ function MarkerIconPicker({ selected, onChange, iconUrl, isSegmented }: MarkerIc
             flexDirection: 'column',
             gap: '2px',
             minWidth: '120px',
+            maxWidth: 'none',
           }}
         >
           {MARKER_ICONS.map(icon => (
@@ -181,9 +201,22 @@ export default function App() {
   const [exportSuccess, setExportSuccess] = useState<string | null>(null);
   const [exportDropdownPos, setExportDropdownPos] = useState<{top:number; right:number} | null>(null);
 
+  const [showMarkers, setShowMarkers] = useState<boolean>(true);
+  const [showManualScreenshots, setShowManualScreenshots] = useState<boolean>(true);
+  const [showAutoScreenshots, setShowAutoScreenshots] = useState<boolean>(true);
+  const [timelineViewEnabled, setTimelineViewEnabled] = useState<boolean>(false);
+  const [filterDropdownOpen, setFilterDropdownOpen] = useState<boolean>(false);
+  const [knowledgeIndex, setKnowledgeIndex] = useState<KnowledgeItem[]>([]);
+  const [tourOpen, setTourOpen] = useState<boolean>(false);
+
+  const filterDropdownRef = useRef<HTMLDivElement>(null);
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
+  const mainContainerRef = useRef<HTMLDivElement>(null);
+
   const editorRef = useRef<HTMLDivElement>(null);
   const saveTimeoutRef = useRef<number | null>(null);
   const savedRangeRef = useRef<Range | null>(null);
+  const scrollRequestIdRef = useRef<number>(0);
   const objectUrlsRef = useRef<string[]>([]);
   const videoIdRef = useRef<string>('');
   const videoTitleRef = useRef<string>('Untitled Lecture');
@@ -213,6 +246,69 @@ export default function App() {
     document.addEventListener('mousedown', onClickOutside, true);
     return () => document.removeEventListener('mousedown', onClickOutside, true);
   }, [exportMenuOpen]);
+
+  // Click-outside listener for filter dropdown
+  useEffect(() => {
+    if (!filterDropdownOpen) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (filterButtonRef.current?.contains(target)) return;
+      if (filterDropdownRef.current?.contains(target)) return;
+      setFilterDropdownOpen(false);
+    };
+    document.addEventListener('mousedown', handleOutsideClick, true);
+    return () => document.removeEventListener('mousedown', handleOutsideClick, true);
+  }, [filterDropdownOpen]);
+
+  const handleToggleVisibility = async (key: 'showMarkers' | 'showManualScreenshots' | 'showAutoScreenshots', currentVal: boolean) => {
+    const newVal = !currentVal;
+    if (key === 'showMarkers') setShowMarkers(newVal);
+    else if (key === 'showManualScreenshots') setShowManualScreenshots(newVal);
+    else if (key === 'showAutoScreenshots') setShowAutoScreenshots(newVal);
+    await setVisibilitySetting(key, newVal);
+  };
+
+  const handleShowAll = async () => {
+    setShowMarkers(true);
+    setShowManualScreenshots(true);
+    setShowAutoScreenshots(true);
+    await Promise.all([
+      setVisibilitySetting('showMarkers', true),
+      setVisibilitySetting('showManualScreenshots', true),
+      setVisibilitySetting('showAutoScreenshots', true)
+    ]);
+  };
+
+  const handleHideAll = async () => {
+    setShowMarkers(false);
+    setShowManualScreenshots(false);
+    setShowAutoScreenshots(false);
+    await Promise.all([
+      setVisibilitySetting('showMarkers', false),
+      setVisibilitySetting('showManualScreenshots', false),
+      setVisibilitySetting('showAutoScreenshots', false)
+    ]);
+  };
+
+  const handleTimelineItemClick = (itemId: string) => {
+    setTimelineViewEnabled(false);
+    setTimeout(() => {
+      if (!editorRef.current) return;
+      const element = editorRef.current.querySelector(`[data-element-id="${itemId}"]`) as HTMLElement;
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        element.classList.add('timeline-highlight');
+        setTimeout(() => {
+          element.classList.remove('timeline-highlight');
+        }, 1500);
+        editorRef.current.focus();
+      }
+    }, 50);
+  };
+
+  const markerCount = knowledgeIndex.filter(item => item.type === 'marker').length;
+  const manualScreenshotCount = knowledgeIndex.filter(item => item.type === 'screenshot' && item.source === 'manual').length;
+  const autoScreenshotCount = knowledgeIndex.filter(item => item.type === 'screenshot' && item.source === 'auto').length;
 
   const iconUrl = useCallback((path: string) => {
     try { return chrome.runtime.getURL(path); } catch { return path; }
@@ -306,6 +402,14 @@ export default function App() {
     getSelectedMarkerIcon().then(setSelectedMarkerIconState);
     getImageOutlineEnabled().then(setImageOutlineEnabled);
 
+    // Check if onboarding has been completed
+    getOnboardingCompleted().then(completed => {
+      if (!completed) {
+        // Delay tour start to allow UI to render
+        setTimeout(() => setTourOpen(true), 1000);
+      }
+    });
+
     return () => {
       clearTimeout(t1);
       clearTimeout(t2);
@@ -314,10 +418,45 @@ export default function App() {
     };
   }, []);
 
+  const buildKnowledgeIndexFromDOM = (root: HTMLElement | null, docId: string) => {
+    if (!root) return;
+    const items: KnowledgeItem[] = [];
+    root.querySelectorAll<HTMLElement>('[data-type="marker"], [data-type="screenshot"]').forEach(el => {
+      const id = el.getAttribute('data-element-id');
+      if (!id) return;
+      const type = el.getAttribute('data-type') as 'marker' | 'screenshot';
+      const rawTimestamp = el.getAttribute('data-timestamp');
+      const timestamp = Number(rawTimestamp);
+
+      if (rawTimestamp === null || isNaN(timestamp) || timestamp < 0) {
+        console.warn(`[NullNote] Knowledge element ${id} has invalid timestamp:`, rawTimestamp);
+        return;
+      }
+
+      const source = el.getAttribute('data-source') as 'manual' | 'auto' | undefined;
+
+      items.push({
+        id,
+        documentId: el.getAttribute('data-document-id') || docId,
+        videoId: el.getAttribute('data-video-id') || docId,
+        videoTitle: videoTitleRef.current || videoTitle,
+        timestamp,
+        type,
+        source,
+        createdAt: Date.now()
+      });
+    });
+
+    setKnowledgeIndex(items);
+  };
+
   // ─── DOCUMENT LOAD ─────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!videoId) return;
+    if (!videoId) {
+      setKnowledgeIndex([]); // Reset index on close
+      return;
+    }
 
     const loadDoc = async () => {
       revokeObjectUrls();
@@ -346,6 +485,99 @@ export default function App() {
           if (id && urls[id]) img.src = urls[id];
         });
 
+        // Retroactive Metadata Upgrade Scan
+        let needsSave = false;
+
+        // Restore/correct chrome-extension icon URLs if extension ID changed
+        try {
+          const currentExtUrl = chrome.runtime.getURL('');
+          editorRef.current.querySelectorAll<HTMLImageElement>('img[src^="chrome-extension://"]').forEach(img => {
+            const src = img.src;
+            if (!src.startsWith(currentExtUrl)) {
+              const idx = src.indexOf('/icons/');
+              if (idx !== -1) {
+                const path = src.substring(idx);
+                img.src = chrome.runtime.getURL(path.substring(1));
+                needsSave = true;
+              }
+            }
+          });
+        } catch (e) {
+          console.error('[NullNote] Failed to restore extension URLs:', e);
+        }
+        const legacySelectors = '[data-marker-id], [data-screenshot-id], .marker-badge, .screenshot-block';
+        editorRef.current.querySelectorAll<HTMLElement>(legacySelectors).forEach(el => {
+          const isOuterElement = el.classList.contains('marker-badge') || el.classList.contains('screenshot-block');
+          // Skip inner child elements like <img> inside markers — only process container-level divs
+          if (!isOuterElement || el.tagName === 'IMG') return;
+
+          let type = el.getAttribute('data-type') as 'marker' | 'screenshot' | null;
+          if (!type) {
+            const isScreenshot = el.classList.contains('screenshot-block') || el.hasAttribute('data-screenshot-id');
+            type = isScreenshot ? 'screenshot' : 'marker';
+            el.setAttribute('data-type', type);
+            needsSave = true;
+          }
+
+          if (!el.getAttribute('data-element-id')) {
+            el.setAttribute('data-element-id', crypto.randomUUID());
+            needsSave = true;
+          }
+
+          if (!el.getAttribute('data-schema-version')) {
+            el.setAttribute('data-schema-version', '1');
+            needsSave = true;
+          }
+
+          if (!el.getAttribute('data-document-id')) {
+            el.setAttribute('data-document-id', videoId);
+            needsSave = true;
+          }
+          if (!el.getAttribute('data-video-id')) {
+            el.setAttribute('data-video-id', videoId);
+            needsSave = true;
+          }
+
+          if (type === 'screenshot' && !el.getAttribute('data-source')) {
+            el.setAttribute('data-source', 'manual');
+            needsSave = true;
+          }
+        });
+
+        // Cleanup: remove corrupted data-type/data-source from <img> elements inside markers
+        // Previous versions of the upgrade scan incorrectly stamped these on inner <img> tags
+        editorRef.current.querySelectorAll<HTMLImageElement>('[data-type="marker"] img[data-type], [data-type="marker"] img[data-source]').forEach(img => {
+          if (img.hasAttribute('data-type')) {
+            img.removeAttribute('data-type');
+            needsSave = true;
+          }
+          if (img.hasAttribute('data-source')) {
+            img.removeAttribute('data-source');
+            needsSave = true;
+          }
+        });
+
+        // Cleanup: remove camera icon span from screenshot blocks' timestamp links
+        editorRef.current.querySelectorAll('.screenshot-block .timestamp-link span').forEach(span => {
+          if (span.textContent === '📷' || span.textContent === '📸') {
+            span.remove();
+            needsSave = true;
+          }
+        });
+
+        // Load persisted visibility settings
+        const settings = await getVisibilitySettings();
+        setShowMarkers(settings.showMarkers);
+        setShowManualScreenshots(settings.showManualScreenshots);
+        setShowAutoScreenshots(settings.showAutoScreenshots);
+
+        // Build the runtime Knowledge Index
+        buildKnowledgeIndexFromDOM(editorRef.current, videoId);
+
+        if (needsSave) {
+          handleInput(); // schedules save & Index reconciliation
+        }
+
         sendMarkersToContentScript(extractMarkers(editorRef.current));
       }
     };
@@ -372,7 +604,7 @@ export default function App() {
         // imageData is optionally included when marker was triggered alongside a screenshot
         insertMarkerInline(message.timestamp, message.imageData, message.icon);
       } else if (message.type === 'insert-screenshot') {
-        insertScreenshotInline(message.timestamp, message.imageData);
+        insertScreenshotInline(message.timestamp, message.imageData, message.source);
       } else if (message.type === 'autoCaptureCommand') {
         setAutoCaptureEnabledState(Boolean(message.enabled));
       } else if (message.type === 'autoCaptureIntervalCommand') {
@@ -438,6 +670,15 @@ export default function App() {
       // Persist document HTML
       const html = editorRef.current.innerHTML;
       await saveDocument(currentVideoId, currentVideoTitle, html);
+
+      // Knowledge Index Reconciliation (Optimized O(n))
+      const activeIds = new Set(
+        Array.from(editorRef.current.querySelectorAll('[data-element-id]'))
+          .map(el => el.getAttribute('data-element-id')!)
+          .filter(Boolean)
+      );
+      setKnowledgeIndex(prev => prev.filter(item => activeIds.has(item.id)));
+
       sendMarkersToContentScript(markers);
     } catch (e) {
       console.error('[NullNote] Save failed:', e);
@@ -552,6 +793,58 @@ export default function App() {
     if (saveTimeoutRef.current) window.clearTimeout(saveTimeoutRef.current);
     saveTimeoutRef.current = window.setTimeout(triggerSaveAndMarkerUpdate, 500);
   };
+  const scrollToCapture = (elementId: string) => {
+    const requestId = ++scrollRequestIdRef.current;
+
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (requestId !== scrollRequestIdRef.current) return;
+
+        const container = editorRef.current;
+        if (!container?.isConnected) return;
+        
+        const el = container.querySelector<HTMLElement>(`[data-element-id="${elementId}"]`);
+        if (!el) return;
+
+        const containerRect = container.getBoundingClientRect();
+        const elementRect = el.getBoundingClientRect();
+
+        const scrollTop =
+          container.scrollTop +
+          (elementRect.top - containerRect.top) -
+          container.clientHeight / 2 +
+          elementRect.height / 2;
+
+        const maxScrollTop = Math.max(
+          0,
+          container.scrollHeight - container.clientHeight
+        );
+
+        const targetScrollTop = Math.max(
+          0,
+          Math.min(scrollTop, maxScrollTop)
+        );
+
+        container.scrollTo({
+          top: targetScrollTop,
+          behavior: 'smooth'
+        });
+
+        // Safely retrigger animation if multiple insertions happen quickly
+        el.classList.remove('capture-highlight');
+        void el.offsetWidth; 
+        el.classList.add('capture-highlight');
+        
+        el.addEventListener(
+          'animationend',
+          () => {
+            el.classList.remove('capture-highlight');
+          },
+          { once: true }
+        );
+      });
+    });
+  };
 
   // ─── MARKER PIPELINE ─────────────────────────────────────────────────────
   // Markers optionally carry imageData — when they do, a screenshot is saved
@@ -571,6 +864,7 @@ export default function App() {
     const currentVideoId = videoIdRef.current;
     const currentVideoUrl = videoUrlRef.current;
     const markerId = 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+    const uuid = crypto.randomUUID();
 
     const iconDef = MARKER_ICONS.find(m => m.key === markerIcon) ?? MARKER_ICONS[0];
     const borderColor = getMarkerColor(markerIcon);
@@ -612,11 +906,15 @@ export default function App() {
     const html = `
       <div
         class="marker-badge"
+        data-type="marker"
+        data-schema-version="1"
         data-timestamp="${timestamp}"
+        data-document-id="${currentVideoId}"
+        data-video-id="${currentVideoId}"
+        data-element-id="${uuid}"
         data-marker-id="${markerId}"
         data-marker-icon="${markerIcon}"
         data-video-url="${deepLink}"
-        data-video-id="${currentVideoId}"
         contenteditable="false"
         style="margin:6px 0;padding:0;user-select:none;display:flex;flex-direction:column;gap:2px;"
       >
@@ -627,12 +925,26 @@ export default function App() {
     `;
     insertHtml(html);
     console.log('[NullNote] Marker inserted', imageData ? '(with screenshot)' : '(text only)');
+
+    const newItem: KnowledgeItem = {
+      id: uuid,
+      documentId: currentVideoId,
+      videoId: currentVideoId,
+      videoTitle: videoTitleRef.current || videoTitle,
+      timestamp,
+      type: 'marker',
+      createdAt: Date.now()
+    };
+    setKnowledgeIndex(prev => [...prev, newItem]);
     await triggerSaveAndMarkerUpdate();
+    
+    // Always auto-scroll to newly inserted marker
+    scrollToCapture(uuid);
   };
 
   // ─── SCREENSHOT PIPELINE ───────────────────────────────────────────────────
 
-  const insertScreenshotInline = async (timestamp: number, imageData: string) => {
+  const insertScreenshotInline = async (timestamp: number, imageData: string, source: 'manual' | 'auto' = 'manual') => {
     if (editorRef.current) {
       const existing = editorRef.current.querySelector(`[data-timestamp="${timestamp}"]`);
       if (existing && (existing.classList.contains('screenshot-block') || existing.querySelector('img.screenshot-img'))) {
@@ -645,6 +957,7 @@ export default function App() {
     const currentVideoId = videoIdRef.current;
     const currentVideoUrl = videoUrlRef.current;
     const id = 'scr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
+    const uuid = crypto.randomUUID();
 
     const markerIcon = selectedMarkerIconRef.current;
     const borderColor = getMarkerColor(markerIcon);
@@ -680,14 +993,19 @@ export default function App() {
     const html = `
       <div
         class="screenshot-block marker-badge"
+        data-type="screenshot"
+        data-schema-version="1"
+        data-source="${source}"
         data-timestamp="${timestamp}"
+        data-document-id="${currentVideoId}"
+        data-video-id="${currentVideoId}"
+        data-element-id="${uuid}"
         data-screenshot-id="${id}"
         data-video-url="${deepLink}"
-        data-video-id="${currentVideoId}"
         contenteditable="false"
         style="margin:12px 0;padding:0;user-select:none;display:flex;flex-direction:column;gap:2px;"
       >
-        <a href="${deepLink}" target="_blank" class="timestamp-link" style="display:flex;align-items:center;text-decoration:none;font-family:ui-monospace,'JetBrains Mono','Fira Code',monospace;font-size:15px;color:#94a3b8;font-weight:600;letter-spacing:0.02em;line-height:1;margin:0;padding:0;cursor:pointer;"><span style="font-size:20px;margin-right:6px;">📷</span>${formatted}</a>
+        <a href="${deepLink}" target="_blank" class="timestamp-link" style="display:flex;align-items:center;text-decoration:none;font-family:ui-monospace,'JetBrains Mono','Fira Code',monospace;font-size:15px;color:#94a3b8;font-weight:600;letter-spacing:0.02em;line-height:1;margin:0;padding:0;cursor:pointer;">${formatted}</a>
         <img
           src="${objectUrl}"
           loading="lazy"
@@ -700,7 +1018,22 @@ export default function App() {
     `;
     insertHtml(html);
     console.log('[NullNote] Screenshot inserted into editor');
+
+    const newItem: KnowledgeItem = {
+      id: uuid,
+      documentId: currentVideoId,
+      videoId: currentVideoId,
+      videoTitle: videoTitleRef.current || videoTitle,
+      timestamp,
+      type: 'screenshot',
+      source,
+      createdAt: Date.now()
+    };
+    setKnowledgeIndex(prev => [...prev, newItem]);
     await triggerSaveAndMarkerUpdate();
+    
+    // Always auto-scroll to newly inserted screenshot (manual or auto)
+    scrollToCapture(uuid);
   };
 
   // ─── HANDLERS ──────────────────────────────────────────────────────────────
@@ -750,24 +1083,56 @@ export default function App() {
     await setSelectedMarkerIconInDb(icon);
     chrome.runtime.sendMessage({ type: 'selectedMarkerIconChanged', icon });
     console.log('[NullNote] Marker icon changed:', icon);
+
+    // Restore player focus immediately after dropdown selection closes
+    sendToContentScript({ type: 'restorePlayerFocus' });
+
+    // Blur active element to release iframe focus
+    if (document.activeElement && typeof (document.activeElement as any).blur === 'function') {
+      (document.activeElement as HTMLElement).blur();
+    }
   };
 
   const handleToggleAutoSnap = async () => {
     const next = !autoCaptureEnabled;
+    // Optimistically update UI immediately for responsiveness
     setAutoCaptureEnabledState(next);
-    await setAutoCaptureEnabled(next);
-    chrome.runtime.sendMessage({ type: 'toggleAutoCapture', payload: next }, () => {
-      if (chrome.runtime.lastError) { /* ignore */ }
+    // Background is the single source of truth — one message, one storage write, one relay to content script
+    chrome.runtime.sendMessage({ type: STORAGE_MESSAGE_TYPES.toggleAutoCapture, payload: next }, (resp) => {
+      if (chrome.runtime.lastError) {
+        // Revert UI if message failed
+        setAutoCaptureEnabledState(!next);
+        console.error('[NullNote] toggleAutoCapture message failed:', chrome.runtime.lastError.message);
+        return;
+      }
+      // Confirm with actual stored value from background response
+      if (resp?.success && typeof resp.enabled === 'boolean') {
+        setAutoCaptureEnabledState(resp.enabled);
+      }
     });
     console.log('[NullNote] AutoSnap toggled via UI:', next);
   };
 
   const handleIntervalChange = async (interval: number) => {
     setAutoCaptureIntervalState(interval);
-    await setAutoCaptureInterval(interval);
-    chrome.runtime.sendMessage({ type: 'setAutoCaptureInterval', payload: interval }, () => {
-      if (chrome.runtime.lastError) { /* ignore */ }
+    // Background is the single source of truth — one message, one storage write, one relay
+    chrome.runtime.sendMessage({ type: STORAGE_MESSAGE_TYPES.setAutoCaptureInterval, payload: interval }, (resp) => {
+      if (chrome.runtime.lastError) {
+        console.error('[NullNote] setAutoCaptureInterval message failed:', chrome.runtime.lastError.message);
+      }
+      if (resp?.success && typeof resp.interval === 'number') {
+        setAutoCaptureIntervalState(resp.interval);
+      }
     });
+  };
+
+  const handleTourClose = () => {
+    setTourOpen(false);
+  };
+
+  const handleTourComplete = async () => {
+    setTourOpen(false);
+    await setOnboardingCompleted(true);
   };
 
   // ─── SEARCH ────────────────────────────────────────────────────────────────
@@ -884,6 +1249,7 @@ export default function App() {
 
   return (
     <main
+      ref={mainContainerRef}
       className={`h-screen overflow-hidden flex flex-col select-none bg-white text-slate-900 ${imageOutlineEnabled ? 'image-outline-enabled' : 'image-outline-disabled'}`}
       style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box', overflowX: 'hidden', minWidth: 0 }}
     >
@@ -891,7 +1257,7 @@ export default function App() {
         /* Box-sizing fix: every element stays within its parent */
         *, *::before, *::after { box-sizing: border-box; }
         /* Global overflow guard: no child ever causes horizontal scroll */
-        body, main, header, section, div { max-width: 100%; }
+        body, main, header, section, div:not(.popup-dropdown) { max-width: 100%; }
         /* Global override to disable screenshot outlines retroactively */
         .image-outline-disabled .screenshot-img { border-width: 0px !important; }
         :root {
@@ -926,6 +1292,25 @@ export default function App() {
         .icon-btn:hover { border-color: #f59e0b; color: #b45309; background: #fffbeb; }
         .icon-btn.active { border-color: #f59e0b; color: #b45309; background: #fef3c7; }
         @keyframes slideDown { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
+        .hide-markers [data-type="marker"] {
+          display: none !important;
+        }
+        .hide-manual-screenshots [data-type="screenshot"][data-source="manual"] {
+          display: none !important;
+        }
+        .hide-auto-screenshots [data-type="screenshot"][data-source="auto"] {
+          display: none !important;
+        }
+        @keyframes highlightPulse {
+          0% { background-color: #fef3c7; box-shadow: 0 0 0 4px #fef3c7; }
+          50% { background-color: #fef3c7; box-shadow: 0 0 0 8px #fde68a; }
+          100% { background-color: transparent; box-shadow: none; }
+        }
+        .timeline-highlight {
+          animation: highlightPulse 1.5s ease-out;
+          border-radius: 4px;
+        }
+
         .search-bar { animation: slideDown 0.15s ease; }
       `}</style>
 
@@ -944,6 +1329,7 @@ export default function App() {
           {/* Search icon */}
           <button
             type="button"
+            data-tour-id="search-button"
             className={`icon-btn ${searchOpen ? 'active' : ''}`}
             title="Search notes"
             onClick={() => {
@@ -961,6 +1347,7 @@ export default function App() {
             <button
               ref={exportBtnRef}
               type="button"
+              data-tour-id="export-button"
               className="tool-btn"
               style={{ padding:'5px 10px', fontSize:11.5, opacity: isExporting ? 0.6 : 1, cursor: isExporting ? 'not-allowed' : 'pointer' }}
               onClick={() => {
@@ -1061,6 +1448,7 @@ export default function App() {
               />
             ) : (
               <h1
+                data-tour-id="video-title"
                 onClick={handleTitleClick}
                 title="Click to rename"
                 style={{
@@ -1086,6 +1474,7 @@ export default function App() {
 
           <button
             type="button"
+            data-tour-id="notes-list-button"
             className={`icon-btn ${notesListOpen ? 'active' : ''}`}
             title="View saved notes"
             style={{ width: 30, height: 30 }}
@@ -1342,16 +1731,16 @@ export default function App() {
       )}
 
       {/* ── TOOLBAR ───────────────────────────────────────────────── */}
-      <div style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 12px', borderBottom:'1px solid #e8ecf0', background:'#f8fafc', flexWrap:'wrap', minWidth:0, boxSizing:'border-box', position:'relative', zIndex:10 }}>
+      <div data-tour-id="editor-toolbar" style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 12px', borderBottom:'1px solid #e8ecf0', background:'#f8fafc', flexWrap:'wrap', minWidth:0, boxSizing:'border-box', position:'relative', zIndex:10, overflow:'visible' }}>
 
         {/* Snap */}
-        <button type="button" className="tool-btn" onClick={handleSnap} title="Snap Screenshot (P)">
+        <button type="button" data-tour-id="snap-button" className="tool-btn" onClick={handleSnap} title="Snap Screenshot (P)">
           <img src={captureIconUrl} alt="" style={{ width:14, height:14, objectFit:'contain' }} />
           Snap
         </button>
 
         {/* Auto Snap */}
-        <div style={{ display:'flex', alignItems:'stretch', borderRadius:8, border:`1.5px solid ${autoCaptureEnabled ? '#f59e0b' : '#e8ecf0'}`, overflow:'hidden', background: autoCaptureEnabled ? '#fef3c7' : '#fff' }}>
+        <div data-tour-id="auto-snap-toggle" style={{ display:'flex', alignItems:'stretch', borderRadius:8, border:`1.5px solid ${autoCaptureEnabled ? '#f59e0b' : '#e8ecf0'}`, overflow:'hidden', background: autoCaptureEnabled ? '#fef3c7' : '#fff' }}>
           <button type="button" onClick={handleToggleAutoSnap}
             title="Auto Capture (A)"
             style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 10px', fontSize:11.5, fontWeight:600, background:'transparent', border:'none', color: autoCaptureEnabled ? '#b45309' : '#374151', cursor:'pointer' }}
@@ -1376,6 +1765,7 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'stretch', borderRadius: 8, border: '1.5px solid #e8ecf0', background: '#fff' }}>
           <button
             type="button"
+            data-tour-id="marker-button"
             onClick={handleMarker}
             title="Add Marker (H)"
             style={{
@@ -1405,13 +1795,289 @@ export default function App() {
           
           <div style={{ width: '1px', background: '#e8ecf0', margin: '4px 0' }} />
 
-          <MarkerIconPicker selected={selectedMarkerIcon} onChange={handleMarkerIconChange} iconUrl={iconUrl} isSegmented={true} />
+          <div data-tour-id="marker-icon-picker" style={{ display: 'flex', alignItems: 'stretch' }}>
+            <MarkerIconPicker selected={selectedMarkerIcon} onChange={handleMarkerIconChange} iconUrl={iconUrl} isSegmented={true} />
+          </div>
+        </div>
+
+        {/* Spacer to push filter dropdown to the far right */}
+        <div style={{ flex: 1 }} />
+
+        {/* Filter & Organize Dropdown */}
+        <div style={{ position: 'relative' }}>
+          <button
+            ref={filterButtonRef}
+            type="button"
+            data-tour-id="filter-dropdown"
+            className={`tool-btn ${filterDropdownOpen ? 'active' : ''}`}
+            onClick={() => setFilterDropdownOpen(!filterDropdownOpen)}
+            title="Filter & Organize"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: '28px',
+              height: '28px',
+              padding: '0',
+              borderRadius: '8px',
+              border: '1.5px solid #e8ecf0',
+              background: '#fff',
+              color: '#374151',
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              outline: 'none',
+              ...(filterDropdownOpen ? {
+                background: '#fef3c7',
+                border: '1.5px solid #f59e0b',
+                color: '#b45309'
+              } : {})
+            }}
+            onMouseEnter={e => {
+              if (!filterDropdownOpen) {
+                e.currentTarget.style.border = '1.5px solid #f59e0b';
+                e.currentTarget.style.color = '#b45309';
+                e.currentTarget.style.background = '#fffbeb';
+              }
+            }}
+            onMouseLeave={e => {
+              if (!filterDropdownOpen) {
+                e.currentTarget.style.border = '1.5px solid #e8ecf0';
+                e.currentTarget.style.color = '#374151';
+                e.currentTarget.style.background = '#fff';
+              }
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="21" y1="4" x2="14" y2="4"></line>
+              <line x1="10" y1="4" x2="3" y2="4"></line>
+              <line x1="21" y1="12" x2="12" y2="12"></line>
+              <line x1="8" y1="12" x2="3" y2="12"></line>
+              <line x1="21" y1="20" x2="16" y2="20"></line>
+              <line x1="12" y1="20" x2="3" y2="20"></line>
+              <line x1="14" y1="2" x2="14" y2="6"></line>
+              <line x1="8" y1="10" x2="8" y2="14"></line>
+              <line x1="16" y1="18" x2="16" y2="22"></line>
+            </svg>
+          </button>
+          
+          {filterDropdownOpen && (
+            <div
+              ref={filterDropdownRef}
+              className="popup-dropdown"
+              style={{
+                position: 'absolute',
+                top: '100%',
+                right: 0,
+                marginTop: '6px',
+                width: 220,
+                borderRadius: 12,
+                border: '1.5px solid #e8ecf0',
+                background: '#fff',
+                padding: '10px 12px',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                zIndex: 999,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+                animation: 'slideDown 0.12s ease',
+                maxWidth: 'none'
+              }}
+            >
+              {/* Visibility Section */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Visibility</span>
+                
+                {/* Markers Toggle */}
+                <button
+                  type="button"
+                  onClick={() => handleToggleVisibility('showMarkers', showMarkers)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    outline: 'none',
+                    border: showMarkers ? '1.5px solid #f59e0b' : '1.5px solid #e8ecf0',
+                    background: showMarkers ? '#fef3c7' : '#fff',
+                    color: showMarkers ? '#b45309' : '#374151'
+                  }}
+                >
+                  <span>Markers</span>
+                  <span style={{ 
+                    fontSize: '10px', 
+                    fontWeight: 700, 
+                    background: showMarkers ? '#fcd34d' : '#f1f5f9', 
+                    color: showMarkers ? '#b45309' : '#64748b', 
+                    padding: '1px 6px', 
+                    borderRadius: '99px' 
+                  }}>
+                    {markerCount}
+                  </span>
+                </button>
+
+                {/* Manual Screenshots Toggle */}
+                <button
+                  type="button"
+                  onClick={() => handleToggleVisibility('showManualScreenshots', showManualScreenshots)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    outline: 'none',
+                    border: showManualScreenshots ? '1.5px solid #f59e0b' : '1.5px solid #e8ecf0',
+                    background: showManualScreenshots ? '#fef3c7' : '#fff',
+                    color: showManualScreenshots ? '#b45309' : '#374151'
+                  }}
+                >
+                  <span>Manual Screenshots</span>
+                  <span style={{ 
+                    fontSize: '10px', 
+                    fontWeight: 700, 
+                    background: showManualScreenshots ? '#fcd34d' : '#f1f5f9', 
+                    color: showManualScreenshots ? '#b45309' : '#64748b', 
+                    padding: '1px 6px', 
+                    borderRadius: '99px' 
+                  }}>
+                    {manualScreenshotCount}
+                  </span>
+                </button>
+
+                {/* Auto Screenshots Toggle */}
+                <button
+                  type="button"
+                  onClick={() => handleToggleVisibility('showAutoScreenshots', showAutoScreenshots)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    outline: 'none',
+                    border: showAutoScreenshots ? '1.5px solid #f59e0b' : '1.5px solid #e8ecf0',
+                    background: showAutoScreenshots ? '#fef3c7' : '#fff',
+                    color: showAutoScreenshots ? '#b45309' : '#374151'
+                  }}
+                >
+                  <span>Auto Screenshots</span>
+                  <span style={{ 
+                    fontSize: '10px', 
+                    fontWeight: 700, 
+                    background: showAutoScreenshots ? '#fcd34d' : '#f1f5f9', 
+                    color: showAutoScreenshots ? '#b45309' : '#64748b', 
+                    padding: '1px 6px', 
+                    borderRadius: '99px' 
+                  }}>
+                    {autoScreenshotCount}
+                  </span>
+                </button>
+              </div>
+
+              <div style={{ height: '1px', background: '#e8ecf0' }} />
+
+              {/* Organization Section */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Organization</span>
+                
+                {/* Timeline View Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTimelineViewEnabled(!timelineViewEnabled);
+                    setFilterDropdownOpen(false);
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    width: '100%',
+                    padding: '6px 10px',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                    outline: 'none',
+                    border: timelineViewEnabled ? '1.5px solid #f59e0b' : '1.5px solid #e8ecf0',
+                    background: timelineViewEnabled ? '#fef3c7' : '#fff',
+                    color: timelineViewEnabled ? '#b45309' : '#374151'
+                  }}
+                >
+                  <span>Timeline View</span>
+                  {timelineViewEnabled && <span style={{ fontSize: '10px' }}>⚡</span>}
+                </button>
+              </div>
+
+              <div style={{ height: '1px', background: '#e8ecf0' }} />
+
+              {/* Quick Actions */}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={handleShowAll}
+                  style={{
+                    flex: 1,
+                    padding: '6px 8px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    borderRadius: 6,
+                    border: '1.5px solid #e8ecf0',
+                    background: '#fff',
+                    color: '#374151',
+                    cursor: 'pointer',
+                    transition: 'all 0.1s'
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#f8fafc'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+                >
+                  Show All
+                </button>
+                <button
+                  type="button"
+                  onClick={handleHideAll}
+                  style={{
+                    flex: 1,
+                    padding: '6px 8px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    borderRadius: 6,
+                    border: '1.5px solid #e8ecf0',
+                    background: '#fff',
+                    color: '#374151',
+                    cursor: 'pointer',
+                    transition: 'all 0.1s'
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.background = '#f8fafc'; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = '#fff'; }}
+                >
+                  Hide All
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
       {/* ── EDITOR ────────────────────────────────────────────────── */}
       <div style={{ flex:1, position:'relative', display:'flex', flexDirection:'column', minHeight:0, background:'#fff' }}>
-        {isEditorEmpty && (
+        {isEditorEmpty && !timelineViewEnabled && !filterDropdownOpen && (
           <div style={{ position:'absolute', top:16, left:16, right:16, pointerEvents:'none', userSelect:'none', zIndex:10, display:'flex', alignItems:'flex-start', gap:8 }}>
             <Logo size={16} style={{ opacity:0.3, marginTop:2, border:'none', boxShadow:'none', background:'transparent' }} />
             <span style={{ fontSize:13.5, color:'#94a3b8', lineHeight:1.6, whiteSpace:'pre-wrap' }}>
@@ -1427,6 +2093,7 @@ export default function App() {
         )}
         <div
           id="document-editor"
+          data-tour-id="editor-area"
           ref={editorRef}
           contentEditable="true"
           onInput={handleInput}
@@ -1434,10 +2101,146 @@ export default function App() {
           onKeyUp={saveSelection}
           onMouseUp={saveSelection}
           onBlur={saveSelection}
-          className="editor-sheet custom-scrollbar"
-          style={{ flex:1, overflowY:'auto', overflowX:'hidden', padding:'8px 16px 14px', outline:'none', whiteSpace:'pre-wrap', wordBreak:'break-word' }}
+          className={`editor-sheet custom-scrollbar ${!showMarkers ? 'hide-markers' : ''} ${!showManualScreenshots ? 'hide-manual-screenshots' : ''} ${!showAutoScreenshots ? 'hide-auto-screenshots' : ''}`}
+          style={{ 
+            flex:1, 
+            overflowY:'auto', 
+            overflowX:'hidden', 
+            padding:'8px 16px 14px', 
+            outline:'none', 
+            whiteSpace:'pre-wrap', 
+            wordBreak:'break-word',
+            display: timelineViewEnabled ? 'none' : 'block'
+          }}
         />
+
+        {timelineViewEnabled && (
+          <div 
+            className="timeline-container custom-scrollbar"
+            style={{ 
+              flex: 1, 
+              overflowY: 'auto', 
+              padding: '16px', 
+              background: '#fff',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '12px'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+              <h3 style={{ margin: 0, fontSize: '13px', fontWeight: 700, color: '#374151' }}>Timeline Navigation</h3>
+              <button
+                type="button"
+                onClick={() => setTimelineViewEnabled(false)}
+                style={{
+                  padding: '3px 8px',
+                  fontSize: '11px',
+                  fontWeight: 700,
+                  borderRadius: 6,
+                  border: '1.5px solid #e8ecf0',
+                  background: '#fff',
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  transition: 'all 0.1s'
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#f8fafc'; e.currentTarget.style.color = '#374151'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.color = '#64748b'; }}
+              >
+                Exit Timeline
+              </button>
+            </div>
+
+            {(() => {
+              const sortedTimelineItems = [...knowledgeIndex].sort((a, b) => {
+                if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+                return (a.createdAt || 0) - (b.createdAt || 0);
+              });
+
+              if (sortedTimelineItems.length === 0) {
+                return (
+                  <div style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8', fontSize: '12px' }}>
+                    No markers or screenshots found.
+                  </div>
+                );
+              }
+
+              return (
+                <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: '12px', paddingLeft: '16px', borderLeft: '2px solid #f1f5f9', marginLeft: '6px' }}>
+                  {sortedTimelineItems.map(item => {
+                    const isMarker = item.type === 'marker';
+                    const iconDef = isMarker ? (MARKER_ICONS.find(m => m.key === (editorRef.current?.querySelector(`[data-element-id="${item.id}"]`)?.getAttribute('data-marker-icon') || '')) ?? MARKER_ICONS[0]) : null;
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => handleTimelineItemClick(item.id)}
+                        style={{
+                          position: 'relative',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          padding: '10px 12px',
+                          borderRadius: '8px',
+                          border: '1.5px solid #e8ecf0',
+                          background: '#fff',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s'
+                        }}
+                        onMouseEnter={e => {
+                          e.currentTarget.style.borderColor = '#f59e0b';
+                          e.currentTarget.style.boxShadow = '0 2px 8px rgba(245,158,11,0.06)';
+                        }}
+                        onMouseLeave={e => {
+                          e.currentTarget.style.borderColor = '#e8ecf0';
+                          e.currentTarget.style.boxShadow = 'none';
+                        }}
+                      >
+                        {/* Left side dot */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '-22px',
+                            top: '50%',
+                            transform: 'translateY(-50%)',
+                            width: '8px',
+                            height: '8px',
+                            borderRadius: '50%',
+                            background: isMarker ? '#f59e0b' : '#3b82f6',
+                            border: '2px solid #fff',
+                            boxShadow: '0 0 0 2px #f1f5f9'
+                          }}
+                        />
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          {isMarker && iconDef && (
+                            <img src={chrome.runtime.getURL('icons/' + iconDef.file)} style={{ width: '18px', height: '18px', objectFit: 'contain' }} alt="" />
+                          )}
+                          <span style={{ fontSize: '12px', fontWeight: 600, color: '#374151' }}>
+                            {isMarker ? 'Marker' : `Screenshot (${item.source || 'manual'})`}
+                          </span>
+                        </div>
+
+                        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: '11px', fontWeight: 700, color: '#f59e0b', background: '#fef3c7', padding: '2px 6px', borderRadius: '4px' }}>
+                          {formatSeconds(item.timestamp)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+        )}
       </div>
+
+      {/* Tour Component */}
+      <Tour
+        steps={TOUR_STEPS}
+        isOpen={tourOpen}
+        onClose={handleTourClose}
+        onComplete={handleTourComplete}
+        containerRef={mainContainerRef}
+      />
     </main>
   );
 }

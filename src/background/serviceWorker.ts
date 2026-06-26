@@ -90,8 +90,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return false;
   }
 
-  // Relay: seekVideo, manualCapture, manualMarker, update-seekbar-markers, selectedMarkerIconChanged, toggleInPagePanel
-  if (['seekVideo', 'manualCapture', 'manualMarker', 'update-seekbar-markers', 'selectedMarkerIconChanged', 'toggleInPagePanel'].includes(message.type)) {
+  // Relay: seekVideo, manualCapture, manualMarker, update-seekbar-markers, selectedMarkerIconChanged, toggleInPagePanel, restorePlayerFocus
+  if (['seekVideo', 'manualCapture', 'manualMarker', 'update-seekbar-markers', 'selectedMarkerIconChanged', 'toggleInPagePanel', 'restorePlayerFocus'].includes(message.type)) {
     sendToActiveYouTubeTab(message);
     return false;
   }
@@ -103,16 +103,14 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return false;
   }
 
-  // CRITICAL FIX: insert-marker and insert-screenshot come FROM the content script.
-  // They must reach the sidepanel iframe. The sidepanel IS an extension page and receives
-  // chrome.runtime messages automatically. We do NOT need to relay — but we must NOT
-  // return early before Chrome has a chance to dispatch. Return false to allow dispatch.
-  // The previous code had a wrong comment and was effectively working, but the real bug
-  // is that content script was NOT sending these to background at all (it was using
-  // sendMessageToSidepanel which was gated by isSidepanelReady). Now content script
-  // sends directly to background always, and background passes through here.
+  // insert-screenshot and insert-marker come FROM the content script and must reach
+  // the sidepanel iframe. The sidepanel listens on chrome.runtime.onMessage, so we
+  // must re-broadcast the message via chrome.runtime.sendMessage here in the background.
+  // NOTE: chrome.runtime.sendMessage from a content script reaches ONLY the background —
+  // it does NOT automatically forward to other extension pages. The background must
+  // explicitly relay it.
   if (message.type.startsWith('insert-')) {
-    // Pass-through: Chrome automatically delivers runtime messages to all extension pages
+    chrome.runtime.sendMessage(message).catch(() => {});
     return false;
   }
 
@@ -122,10 +120,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     void (async () => {
       const enabled = message.payload as boolean;
       await setAutoCaptureEnabled(enabled);
-      // Relay to content script if the message came from the sidepanel iframe
-      if (!sender.tab?.id) {
-        sendToActiveYouTubeTab({ type: 'autoCaptureCommand', enabled });
-      }
+      // 1. Relay to content script in all YouTube tabs via tabs.sendMessage
+      //    (tabs.sendMessage reaches content scripts, NOT extension pages)
+      // CRITICAL: Always relay unconditionally — sender.tab IS populated when sidepanel
+      //           is an iframe inside the YouTube tab, making !sender.tab?.id always false.
+      sendToAllYouTubeTabs({ type: 'autoCaptureCommand', enabled });
+      // 2. Also broadcast via runtime.sendMessage so the sidepanel iframe's
+      //    chrome.runtime.onMessage listener receives the state change for UI sync.
+      //    (runtime.sendMessage broadcasts to all extension contexts, not tabs)
+      chrome.runtime.sendMessage({ type: 'autoCaptureCommand', enabled }).catch(() => {});
       respond?.({ success: true, enabled });
     })();
     return true; // Keep message channel open for async respond
@@ -135,7 +138,8 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     void (async () => {
       const interval = Number(message.payload);
       await setAutoCaptureInterval(interval);
-      sendToActiveYouTubeTab({ type: 'autoCaptureIntervalCommand', interval });
+      // Broadcast to all YouTube tabs
+      sendToAllYouTubeTabs({ type: 'autoCaptureIntervalCommand', interval });
       respond?.({ success: true, interval });
     })();
     return true;
@@ -168,35 +172,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return false;
   }
 
-  // Relay: autoCaptureCommand from content script → reaches sidepanel via runtime.onMessage
-  if (message.type === 'autoCaptureCommand') {
-    // Already broadcast to all extension pages. If from sidepanel, relay to tab.
-    if (!sender.tab?.id) {
-      sendToActiveYouTubeTab(message);
-    }
-    return false;
-  }
-
-  // Relay: toggleAutoCapture from sidepanel (different from STORAGE_MESSAGE_TYPES version)
-  if (message.type === 'toggleAutoCapture') {
-    void (async () => {
-      const enabled = message.payload as boolean;
-      await setAutoCaptureEnabled(enabled);
-      sendToActiveYouTubeTab({ type: 'autoCaptureCommand', enabled });
-      respond?.({ success: true });
-    })();
-    return true;
-  }
-
-  if (message.type === 'setAutoCaptureInterval') {
-    void (async () => {
-      const interval = Number(message.payload);
-      await setAutoCaptureInterval(interval);
-      sendToActiveYouTubeTab({ type: 'autoCaptureIntervalCommand', interval });
-      respond?.({ success: true });
-    })();
-    return true;
-  }
+  // NOTE: 'autoCaptureCommand' messages from the content script do NOT need relaying.
+  // Chrome runtime.onMessage automatically delivers to all extension pages (sidepanel iframe).
+  // Re-relaying them to the tab would create an echo loop: content → background → content → ...
+  // The sidepanel already receives the message directly from Chrome's broadcast.
+  //
+  // NOTE: 'toggleAutoCapture' and 'setAutoCaptureInterval' raw string literals are intentionally
+  // removed here — STORAGE_MESSAGE_TYPES.toggleAutoCapture === 'toggleAutoCapture' and
+  // STORAGE_MESSAGE_TYPES.setAutoCaptureInterval === 'setAutoCaptureInterval', so those
+  // canonical handlers above already handle these messages. Duplicate handlers caused double-fire.
 
   if (message.type === 'openOptionsPage') {
     chrome.runtime.openOptionsPage();
@@ -286,7 +270,12 @@ chrome.commands.onCommand.addListener((command) => {
       const current = await getAutoCaptureEnabled();
       const next = !current;
       await setAutoCaptureEnabled(next);
-      sendToActiveYouTubeTab({ type: 'autoCaptureCommand', enabled: next });
+      // 1. Broadcast to content script in ALL YouTube tabs
+      sendToAllYouTubeTabs({ type: 'autoCaptureCommand', enabled: next });
+      // 2. Broadcast to sidepanel iframe via runtime.sendMessage
+      //    Keyboard shortcut has no response callback, so the sidepanel's
+      //    runtime.onMessage listener is the ONLY way it learns of the change.
+      chrome.runtime.sendMessage({ type: 'autoCaptureCommand', enabled: next }).catch(() => {});
     })();
   }
 });
