@@ -1,0 +1,141 @@
+# AutoSnap System Architecture (For AI Context)
+
+This document provides a comprehensive overview of the AutoSnap (Auto Capture) feature in the NullNote Chrome Extension. It is written to give any AI assistant a complete understanding of how AutoSnap works, including state management, the messaging pipeline, interval management, capture mechanisms, and deduplication logic.
+
+---
+
+## 1. High-Level Architecture
+
+AutoSnap operates across three distinct Chrome Extension contexts:
+1. **Sidepanel (UI - `App.tsx`)**: The user interface where AutoSnap is toggled on/off and the interval is set. It acts as the final consumer of captured screenshots.
+2. **Background Script (`serviceWorker.ts`)**: The central communication hub and storage manager. It persists user preferences and relays commands/data between the Sidepanel and Content Scripts.
+3. **Content Script (`index.ts`)**: Injected into YouTube tabs. It manages the timer loop, monitors video playback state, captures screenshots from the `<video>` element, and sends the image data back through the pipeline.
+
+---
+
+## 2. Core State Management
+
+### Content Script State (`index.ts`)
+```typescript
+const state = {
+  autoCaptureEnabled: false,
+  autoCaptureInterval: 10, // seconds
+  autoCaptureSessionId: 0, // Generation ID for loop validation
+  captureTimer: undefined, // setTimeout reference
+  autoRemainingMs: 0,      // Smooth countdown tracker
+  autoLastWallClockMs: 0,  // Last tick execution time
+  autoLastVideoTime: null, // Last video.currentTime
+  captureInFlight: false,  // Mutex lock for async capture
+  lastAutoCaptureTimestamp: null, // Last successfully captured timestamp
+  // ... other properties
+};
+```
+
+### Sidepanel State (`App.tsx`)
+```typescript
+const [autoCaptureEnabled, setAutoCaptureEnabledState] = useState(false);
+const [autoCaptureInterval, setAutoCaptureIntervalState] = useState(10);
+const inFlightInsertionsRef = useRef<Set<number>>(new Set()); // Synchronous dedup lock
+```
+
+---
+
+## 3. The Timer Loop Engine (Content Script)
+
+The AutoSnap timer is **not** a simple `setInterval`. It uses a highly robust, recursive `setTimeout` chain with a "Generation ID" (`autoCaptureSessionId`).
+
+### A. Loop Start (`startAutoCaptureLoop`)
+- Increments `autoCaptureSessionId` (e.g., from 0 to 1). This atomically invalidates any old, lingering ticks.
+- Clears any existing `captureTimer`.
+- Resets the clock and calls `scheduleAutoCaptureTick(sessionId)`.
+
+### B. Tick Scheduling (`scheduleAutoCaptureTick`)
+- Uses `window.setTimeout` to schedule the next tick (`runAutoCaptureTick`).
+- Can accept an `overrideMs` for smooth timer transitions.
+
+### C. Tick Execution (`runAutoCaptureTick`)
+When a tick fires, it validates multiple conditions before capturing:
+1. **Stale Loop Check**: `if (sessionId !== state.autoCaptureSessionId) return;`
+2. **Capture Lock**: `if (state.captureInFlight) return;`
+3. **Video Readiness**: Checks if the video exists, is playing, and is ready (`readyState >= 2`).
+4. **Seek Detection**: If the user scrubs the timeline, it detects the unexpected jump and resets the countdown.
+5. **Duplicate Timestamp**: Checks if `currentTime === state.lastAutoCaptureTimestamp`.
+6. **Smooth Countdown Check**: Uses wall-clock time minus elapsed time. If `autoRemainingMs > 100`, it skips capture and reschedules for the remainder.
+
+If all checks pass, it locks the state (`state.captureInFlight = true`), awaits the capture, unlocks in a `finally` block, and reschedules the next tick.
+
+---
+
+## 4. Smooth Interval Transitions
+
+When a user changes the interval (e.g., 10s to 30s) while the loop is running:
+1. `App.tsx` sends `autoCaptureIntervalCommand` (via the background script).
+2. The Content script updates `state.autoCaptureInterval`.
+3. Instead of a hard reset, it calculates how much time has elapsed in the *current* cycle.
+4. It sets the new remaining time (`newRemaining = newIntervalMs - elapsed`).
+5. It increments `autoCaptureSessionId`, clears the old timer, and schedules the new tick with `newRemaining`, preserving the smooth UX.
+
+---
+
+## 5. Capture Mechanism
+
+The `captureScreenshotForVideo(source, video)` function:
+1. Creates a temporary `<canvas>` element in memory matching the video's intrinsic dimensions.
+2. Uses `ctx.drawImage(video, 0, 0)` to paint the current video frame onto the canvas.
+3. Attempts to extract a Base64 string via `canvas.toDataURL('image/jpeg')`.
+4. **CORS Fallback**: If `toDataURL` throws a SecurityError (Canvas Tainting due to cross-origin video), it falls back to asking the background script to take a visible tab screenshot via `chrome.tabs.captureVisibleTab`.
+
+---
+
+## 6. Messaging Pipeline (The Echo Loop Fix)
+
+When a screenshot is captured, it must reach the Sidepanel. 
+1. **Content Script** sends `chrome.runtime.sendMessage({ type: 'insert-screenshot', ... })`.
+2. Chrome natively broadcasts this to ALL extension pages, including the Sidepanel (if open).
+3. **Background Script** also receives it, logs it, and historically re-broadcasted it via `chrome.runtime.sendMessage`.
+
+**The Echo Loop Problem:** The Sidepanel was receiving the original message from the Content Script, and milliseconds later, receiving the *relayed* message from the Background Script.
+
+### Deduplication (The Fix in `App.tsx`)
+To prevent the double message from inserting two identical screenshots:
+1. **Unique IDs**: The content script generates a unique `captureId` (UUID) for every capture event and includes it in the message payload.
+2. **Synchronous Lock**: `inFlightInsertionsRef.current.add(captureId)` immediately locks the UUID in memory.
+3. The second duplicate message arrives, hits `if (inFlightInsertionsRef.current.has(captureId)) return;`, and is silently discarded.
+4. **Async DB Write**: The first message awaits writing the Blob to IndexedDB (`saveScreenshotBlob`).
+5. **DOM Insertion**: It generates HTML and inserts it into the Tiptap Editor (`insertHtml`).
+6. The lock is released in a `finally` block. Because duplicate captures (intentional multiple clicks) have different UUIDs, they are correctly permitted without false-positive blocking.
+
+---
+
+## 7. Start/Stop UI Flow
+
+1. User clicks Auto Toggle in Sidepanel.
+2. Sidepanel sends `STORAGE_MESSAGE_TYPES.toggleAutoCapture` to Background.
+3. Background saves state to Sync Storage and sends `autoCaptureCommand` to all tabs.
+4. Content script receives `autoCaptureCommand`.
+5. If enabled and on a valid Watch Page (not Shorts), calls `startAutoCaptureLoop()`. Otherwise, calls `stopAutoCaptureLoop()`.
+
+---
+
+## Summary for AI Assistants
+When debugging AutoSnap in the future:
+- **Never use `setInterval`**. Rely on the `autoCaptureSessionId` + `setTimeout` architecture.
+- **Deduplication** happens in two places: Content Script (prevents capturing the same timestamp twice) and Sidepanel (prevents duplicate messages/insertions).
+- **Smooth Timers**: Always use wall-clock deltas to manage interval changes, do not hard reset unless explicitly stopped.
+- **Message Echoes**: Remember that `chrome.runtime.sendMessage` from a content script goes directly to the Sidepanel natively. Do not rely exclusively on the background script for relaying content-to-sidepanel events.
+
+---
+
+## 8. Global Content Integrity Rule
+
+**NullNote capture and annotation features must never operate while a YouTube advertisement is playing.**
+
+This includes:
+- Manual Snap
+- AutoSnap
+- Marker creation
+- Quick Highlight
+- Keyboard shortcuts
+
+AutoSnap is designed to silently pause during ads (keeping its loop alive but not ticking down its countdown or initiating captures). It automatically resumes its countdown when the ad ends.
+Manual actions during an ad are blocked at the source with a short, friendly visual toast (`showToast`) injected directly into the YouTube player context to notify the user.

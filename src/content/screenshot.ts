@@ -14,6 +14,11 @@ export function captureVideoFrame(video: HTMLVideoElement): Promise<string> {
       // canvas.toBlob runs the compression asynchronously off the main thread,
       // and 0.9 quality dramatically reduces file size and encoding time.
       canvas.toBlob((blob) => {
+        // Free memory aggressively
+        canvas.width = 0;
+        canvas.height = 0;
+        canvas.remove();
+
         if (!blob) {
           reject(new Error('Canvas to Blob conversion failed.'));
           return;

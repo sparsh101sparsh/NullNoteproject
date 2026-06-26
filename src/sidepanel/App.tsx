@@ -225,6 +225,7 @@ export default function App() {
   const selectedMarkerIconRef = useRef<string>(DEFAULT_MARKER_ICON);
   const exportBtnRef = useRef<HTMLButtonElement>(null);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
+  const inFlightInsertionsRef = useRef<Set<string>>(new Set());
 
   // CRITICAL: Keep refs in sync with state so closures always see latest values
   useEffect(() => { videoIdRef.current = videoId; }, [videoId]);
@@ -592,6 +593,7 @@ export default function App() {
 
   useEffect(() => {
     const handleMessage = (message: any) => {
+      console.log('[NullNote Sidepanel] received', message.type, message.timestamp, message.source);
       if (!message?.type) return;
 
       console.log('[NullNote] Sidepanel received message:', message.type);
@@ -602,9 +604,9 @@ export default function App() {
         if (message.videoUrl) setVideoUrl(message.videoUrl);
       } else if (message.type === 'insert-marker') {
         // imageData is optionally included when marker was triggered alongside a screenshot
-        insertMarkerInline(message.timestamp, message.imageData, message.icon);
+        insertMarkerInline(message.timestamp, message.imageData, message.icon, message.captureId);
       } else if (message.type === 'insert-screenshot') {
-        insertScreenshotInline(message.timestamp, message.imageData, message.source);
+        insertScreenshotInline(message.timestamp, message.imageData, message.source, message.captureId);
       } else if (message.type === 'autoCaptureCommand') {
         setAutoCaptureEnabledState(Boolean(message.enabled));
       } else if (message.type === 'autoCaptureIntervalCommand') {
@@ -850,17 +852,18 @@ export default function App() {
   // Markers optionally carry imageData — when they do, a screenshot is saved
   // alongside the marker and the block renders both the timestamp and the frame.
 
-  const insertMarkerInline = async (timestamp: number, imageData?: string, icon?: string) => {
+  const insertMarkerInline = async (timestamp: number, imageData?: string, icon?: string, captureId?: string) => {
+    const dedupeId = captureId || `legacy-marker-${timestamp}`;
     const markerIcon = icon || selectedMarkerIconRef.current;
-    if (editorRef.current) {
-      const existing = editorRef.current.querySelector(`.marker-badge[data-timestamp="${timestamp}"][data-marker-icon="${markerIcon}"]`);
-      if (existing) {
-        console.log(`[NullNote] Marker with icon ${markerIcon} already exists at timestamp ${timestamp}. Skipping duplicate.`);
-        return;
-      }
-    }
-
-    const formatted = formatSeconds(timestamp);
+    
+    // Prevent double insertions from duplicate messages
+    if (inFlightInsertionsRef.current.has(dedupeId)) return;
+    
+    // DOM existing check removed to allow intentional duplicates at the same timestamp
+    
+    inFlightInsertionsRef.current.add(dedupeId);
+    try {
+      const formatted = formatSeconds(timestamp);
     const currentVideoId = videoIdRef.current;
     const currentVideoUrl = videoUrlRef.current;
     const markerId = 'm_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
@@ -940,20 +943,27 @@ export default function App() {
     
     // Always auto-scroll to newly inserted marker
     scrollToCapture(uuid);
+    } finally {
+      inFlightInsertionsRef.current.delete(dedupeId);
+    }
   };
 
   // ─── SCREENSHOT PIPELINE ───────────────────────────────────────────────────
 
-  const insertScreenshotInline = async (timestamp: number, imageData: string, source: 'manual' | 'auto' = 'manual') => {
-    if (editorRef.current) {
-      const existing = editorRef.current.querySelector(`[data-timestamp="${timestamp}"]`);
-      if (existing && (existing.classList.contains('screenshot-block') || existing.querySelector('img.screenshot-img'))) {
-        console.log(`[NullNote] Screenshot already exists at timestamp ${timestamp}. Skipping duplicate.`);
-        return;
-      }
+  const insertScreenshotInline = async (timestamp: number, imageData: string, source: 'manual' | 'auto' = 'manual', captureId?: string) => {
+    const dedupeId = captureId || `legacy-${timestamp}`;
+    console.log('[NullNote INSERT]', timestamp, source);
+
+    // Prevent double insertions from duplicate messages arriving simultaneously
+    if (inFlightInsertionsRef.current.has(dedupeId)) {
+      console.log(`[NullNote] Screenshot already in flight at timestamp ${timestamp}. Skipping duplicate message.`);
+      return;
     }
 
-    const formatted = formatSeconds(timestamp);
+    // DOM existing check removed to allow intentional manual/auto duplicates at the same timestamp
+    inFlightInsertionsRef.current.add(dedupeId);
+    try {
+      const formatted = formatSeconds(timestamp);
     const currentVideoId = videoIdRef.current;
     const currentVideoUrl = videoUrlRef.current;
     const id = 'scr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 9);
@@ -1034,6 +1044,9 @@ export default function App() {
     
     // Always auto-scroll to newly inserted screenshot (manual or auto)
     scrollToCapture(uuid);
+    } finally {
+      inFlightInsertionsRef.current.delete(dedupeId);
+    }
   };
 
   // ─── HANDLERS ──────────────────────────────────────────────────────────────

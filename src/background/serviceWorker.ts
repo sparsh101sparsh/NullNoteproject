@@ -96,10 +96,10 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
     return false;
   }
 
-  // Relay: video-changed — from content script → sidepanel needs to know
   if (message.type === 'video-changed') {
-    // The sidepanel iframe listens on chrome.runtime.onMessage and receives this automatically
-    // No explicit relay needed — Chrome broadcasts to all extension contexts in the same profile
+    // Re-broadcast so the sidepanel iframe receives the video ID and title.
+    // Content script runtime messages ONLY reach the background script directly.
+    chrome.runtime.sendMessage(message).catch(() => {});
     return false;
   }
 
@@ -110,6 +110,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
   // it does NOT automatically forward to other extension pages. The background must
   // explicitly relay it.
   if (message.type.startsWith('insert-')) {
+    console.log('[NullNote BG] relaying:', message.type, message.timestamp, message.source);
     chrome.runtime.sendMessage(message).catch(() => {});
     return false;
   }
